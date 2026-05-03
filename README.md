@@ -10,7 +10,9 @@ Playlists are exported manually from the Music app, then a Python script copies 
 ```
 _player/
 ├── Apple/          ← exported .m3u8 files from Music.app (input)
-├── Android/        ← rewritten .m3u8 files for Android players (output)
+├── Android/        ← rewritten .m3u8 files for Android players (created by the script)
+├── sync.sh                                 ← shell wrapper (macOS / Linux)
+├── sync.ps1                                ← PowerShell wrapper (Windows)
 ├── sync_apple_to_android_list.py
 ├── sync_apple_to_android_config.json       ← your local config (git-ignored)
 └── sync_apple_to_android_config.template.json  ← safe template to commit
@@ -32,19 +34,20 @@ _player/
 > the menu title you type must use that exact character — **not three separate dots** (`...`).
 > On macOS you can type `…` with `Option + ;`.
 
-### On Windows (iTunes)
+### On Windows (iTunes / Apple Music for Windows)
 
-1. Open **iTunes**.
-2. Select the playlist.
+1. Open **iTunes** (or **Apple Music** if you have it from the Microsoft Store).
+2. Select the playlist in the sidebar.
 3. Go to **File › Library › Export Playlist…**
-4. In the Save dialog choose format **M3U** or **M3U8** (prefer M3U8 for Unicode filenames).
-5. Save into the `Apple/` folder.
+4. In the Save dialog choose format **M3U8** (preserves Unicode filenames).
+5. Save into the `Apple\` folder inside `_player`.
+6. Repeat for each playlist you want to sync.
 
-> **Caution — ellipsis on Windows:**
-> If you try to set a keyboard shortcut for this menu item in a third-party tool (e.g. AutoHotkey),
-> be aware that the menu text in iTunes/Music uses a Unicode ellipsis `…` (U+2026), **not** three
-> ASCII periods `...`. Matching against the wrong character will cause the shortcut to fail silently.
-> In AutoHotkey you can embed the character with `…` or copy-paste it directly from the menu.
+> **Caution — ellipsis character:**
+> The menu item ends with a Unicode ellipsis `…` (U+2026), **not** three ASCII periods `...`.
+> If you assign a keyboard shortcut via a third-party tool (e.g. AutoHotkey), you must match
+> the exact character or the shortcut will fail silently.
+> In AutoHotkey use `…` or copy-paste the character directly from the menu title.
 
 ---
 
@@ -53,7 +56,13 @@ _player/
 Copy the template and fill in your details:
 
 ```bash
+# macOS / Linux
 cp sync_apple_to_android_config.template.json sync_apple_to_android_config.json
+```
+
+```powershell
+# Windows (PowerShell)
+Copy-Item sync_apple_to_android_config.template.json sync_apple_to_android_config.json
 ```
 
 Edit `sync_apple_to_android_config.json`:
@@ -86,12 +95,27 @@ Edit `sync_apple_to_android_config.json`:
 
 ## Step 3 — Run the sync script
 
-```bash
-# Preview what would happen (no files written or copied)
-python3 sync_apple_to_android_list.py --dry-run
+Use the wrapper for your platform — it always runs from the correct directory:
 
-# Full sync
+**macOS / Linux**
+```bash
+./sync.sh            # full sync
+./sync.sh --dry-run  # preview only — no files written or copied
+```
+
+**Windows (PowerShell)**
+```powershell
+.\sync.ps1
+.\sync.ps1 --dry-run
+```
+
+> **First-run note (Windows):** PowerShell may block unsigned scripts.
+> Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once to allow local scripts.
+
+Or call the Python script directly on either platform:
+```bash
 python3 sync_apple_to_android_list.py
+python3 sync_apple_to_android_list.py --dry-run
 ```
 
 The script will:
