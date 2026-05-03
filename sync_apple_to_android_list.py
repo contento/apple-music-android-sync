@@ -134,18 +134,19 @@ def is_icloud_placeholder(p: Path) -> bool:
     return (p.parent / f".{p.name}.icloud").exists()
 
 
-def process_playlist(apple_path: Path, dry_run: bool) -> dict:
+def process_playlist(apple_path: Path, dry_run: bool, device_name: str = "") -> dict:
     name = apple_path.stem
     print(f"\n━━━ {name} {'(dry-run) ' if dry_run else ''}━━━")
 
-    android_path = ANDROID_DIR / f"{name}.m3u8"
-    drive_playlist = DRIVE_TARGET / f"{name}.m3u8"
+    playlist_subdir = f"_playlists/{device_name}" if device_name else "_playlists"
+    android_path = ANDROID_DIR / playlist_subdir / f"{name}.m3u8"
+    drive_playlist = DRIVE_TARGET / playlist_subdir / f"{name}.m3u8"
 
     tracks = parse_m3u8(apple_path)
     print(f"  {len(tracks)} tracks in Apple/{apple_path.name}")
 
     # ── 2 & 3. Mirror tracks + build Android playlist ──────────────────────
-    new_lines: list[str] = ["#EXTM3U"]
+    new_lines: list[str] = ["#EXTM3U", f"#PLAYLIST:{name}"]
     counts: dict[str, int] = {
         "copied": 0, "already": 0, "drm": 0,
         "evicted": 0, "missing": 0, "outside": 0,
@@ -193,13 +194,14 @@ def process_playlist(apple_path: Path, dry_run: bool) -> dict:
 
     # ── Write Android playlist ─────────────────────────────────────────────
     if dry_run:
-        print(f"  [dry-run] would write Android/{android_path.name}")
-        print(f"  [dry-run] would copy  → Drive/{drive_playlist.name}")
+        print(f"  [dry-run] would write Android/{android_path.relative_to(ANDROID_DIR)}")
+        print(f"  [dry-run] would copy  → Drive/{drive_playlist.relative_to(DRIVE_TARGET)}")
     else:
-        ANDROID_DIR.mkdir(parents=True, exist_ok=True)
+        android_path.parent.mkdir(parents=True, exist_ok=True)
         android_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        drive_playlist.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(android_path, drive_playlist)
-        print(f"  wrote Android/{android_path.name} + Drive copy")
+        print(f"  wrote Android/{android_path.relative_to(ANDROID_DIR)} + Drive copy")
 
     print(
         f"  copied={counts['copied']}  already={counts['already']}  "
@@ -270,7 +272,7 @@ def main() -> None:
     if not playlist_files:
         sys.exit(f"No playlists found in: {APPLE_DIR}")
 
-    results = [process_playlist(p, dry_run) for p in playlist_files]
+    results = [process_playlist(p, dry_run, selected_device) for p in playlist_files]
 
     print("\n═══ overall ═══")
     width = max(len(r["name"]) for r in results)
