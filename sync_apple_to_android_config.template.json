@@ -6,5 +6,14 @@
     "source_root": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music",
     "drive_target": "~/Library/CloudStorage/GoogleDrive-YOUR_EMAIL@gmail.com/My Drive/Music/_player"
   },
-  "android_root": "/storage/emulated/0/music/_player"
+  "default_device": "internal",
+  "android_root": "/storage/emulated/0/music/_player",
+  "devices": {
+    "internal": {
+      "android_root": "/storage/emulated/0/music/_player"
+    },
+    "a105": {
+      "android_root": "/storage/6135-3539/music/_player"
+    }
+  }
 }

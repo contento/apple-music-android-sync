@@ -20,13 +20,15 @@ Full pipeline: Apple Music → Android (Poweramp / Sony Music Player)
      → Google Drive: …/_player/<name>.m3u8  (syncs to phone)
 
 Usage:
-    python3 sync_apple_to_android_list.py                   # process all Apple/*.m3u8
+    python3 sync_apple_to_android_list.py                   # default device (internal)
+    python3 sync_apple_to_android_list.py --device a105     # use named device root
     python3 sync_apple_to_android_list.py --dry-run         # preview only
 """
 
 from __future__ import annotations
 
 import json
+import argparse
 import shutil
 import sys
 import urllib.parse
@@ -42,6 +44,8 @@ ANDROID_DIR = SCRIPT_DIR / "Android"
 SOURCE_ROOT = SCRIPT_DIR
 DRIVE_TARGET = SCRIPT_DIR
 ANDROID_ROOT = "/storage/emulated/0/music/_player"
+DEVICE_ROOTS: dict[str, str] = {}
+DEFAULT_DEVICE = "internal"
 PLAYLIST_NAMES: list[str] = []
 
 
@@ -77,6 +81,7 @@ def load_config() -> None:
     """Load all paths and playlist names from JSON config file."""
     global PLAYER_ROOT, APPLE_DIR, ANDROID_DIR
     global SOURCE_ROOT, DRIVE_TARGET, ANDROID_ROOT, PLAYLIST_NAMES
+    global DEVICE_ROOTS, DEFAULT_DEVICE
 
     if not CONFIG_FILE.exists():
         sys.exit(f"Config file not found: {CONFIG_FILE}")
@@ -93,6 +98,21 @@ def load_config() -> None:
     SOURCE_ROOT = Path(paths.get("source_root", "")).expanduser()
     DRIVE_TARGET = Path(paths.get("drive_target", "")).expanduser()
     ANDROID_ROOT = raw.get("android_root", ANDROID_ROOT)
+    DEVICE_ROOTS = {}
+    for name, entry in raw.get("devices", {}).items():
+        if not isinstance(name, str):
+            continue
+        if isinstance(entry, str):
+            root = entry.strip()
+        elif isinstance(entry, dict):
+            root = str(entry.get("android_root", "")).strip()
+        else:
+            root = ""
+        if root:
+            DEVICE_ROOTS[name.strip()] = root.rstrip("/")
+    if "internal" not in DEVICE_ROOTS and ANDROID_ROOT:
+        DEVICE_ROOTS["internal"] = str(ANDROID_ROOT).rstrip("/")
+    DEFAULT_DEVICE = str(raw.get("default_device", "internal")).strip() or "internal"
     PLAYLIST_NAMES = extract_enabled_playlists(raw.get("playlists", []))
 
 
@@ -211,11 +231,35 @@ def preflight(dry_run: bool) -> None:
 def main() -> None:
     load_config()
 
-    args = sys.argv[1:]
-    dry_run = "--dry-run" in args
-    unknown = [a for a in args if a != "--dry-run"]
-    if unknown:
-        sys.exit("Usage: python3 sync_apple_to_android_list.py [--dry-run]")
+    parser = argparse.ArgumentParser(
+        description="Sync Apple playlists to Android/Drive targets."
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview actions without copying files.",
+    )
+    parser.add_argument(
+        "--device",
+        default=DEFAULT_DEVICE,
+        help=(
+            "Device key from config.devices (for example: internal, a105). "
+            "Defaults to config.default_device or 'internal'."
+        ),
+    )
+    args = parser.parse_args()
+    dry_run = args.dry_run
+
+    selected_device = args.device.strip()
+    if not selected_device:
+        selected_device = DEFAULT_DEVICE
+    if DEVICE_ROOTS:
+        if selected_device not in DEVICE_ROOTS:
+            known = ", ".join(sorted(DEVICE_ROOTS))
+            sys.exit(f"Unknown device '{selected_device}'. Available: {known}")
+        global ANDROID_ROOT
+        ANDROID_ROOT = DEVICE_ROOTS[selected_device]
+    print(f"Using device '{selected_device}' with android_root={ANDROID_ROOT}")
 
     preflight(dry_run)
     if PLAYLIST_NAMES:

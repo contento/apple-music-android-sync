@@ -76,7 +76,16 @@ Edit `sync_apple_to_android_config.json`:
     "source_root": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music",
     "drive_target": "~/Library/CloudStorage/GoogleDrive-YOUR_EMAIL@gmail.com/My Drive/Music/_player"
   },
-  "android_root": "/storage/emulated/0/music/_player"
+  "default_device": "internal",
+  "android_root": "/storage/emulated/0/music/_player",
+  "devices": {
+    "internal": {
+      "android_root": "/storage/emulated/0/music/_player"
+    },
+    "a105": {
+      "android_root": "/storage/6135-3539/music/_player"
+    }
+  }
 }
 ```
 
@@ -87,9 +96,13 @@ Edit `sync_apple_to_android_config.json`:
 | `android_dir` | Where Android `.m3u8` files are written |
 | `source_root` | Root of your local iCloud Music library |
 | `drive_target` | Google Drive folder that syncs to your phone |
+| `default_device` | Device key used when you do not pass `--device` |
 | `android_root` | Absolute path to the music folder **on the Android device** |
+| `devices.<name>.android_root` | Named Android roots you can select with `--device` |
 
 > All paths support `~` for the home directory.
+>
+> `android_root` is kept for backward compatibility and also acts as the fallback for `internal`.
 
 ---
 
@@ -116,7 +129,13 @@ Or call the Python script directly on either platform:
 ```bash
 python3 sync_apple_to_android_list.py
 python3 sync_apple_to_android_list.py --dry-run
+python3 sync_apple_to_android_list.py --device internal
+python3 sync_apple_to_android_list.py --device a105
+python3 sync_apple_to_android_list.py --device a105 --dry-run
 ```
+
+`--device` selects a key from `devices` in your config file.
+If omitted, the script uses `default_device` (or `internal` if not set).
 
 The script will:
 
