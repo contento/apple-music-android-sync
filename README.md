@@ -1,5 +1,14 @@
 # Apple Music → Android Sync
 
+```text
+  o  o
+\______/
+  |
+     |    https://conten.to
+--------
+```
+
+
 Sync Apple Music playlists to an Android device via Google Drive.
 Playlists are exported manually from the Music app, then a Python script copies the tracks and rewrites the paths for Android.
 
