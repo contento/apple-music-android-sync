@@ -19,8 +19,10 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
          → <android_root>/_playlists/<device>/<name>.m3u8
 
   --flac
-    Mirror the FLAC folder (Artist/Album/Track)
-         → <android_root>/_flac/<Artist>/<Album>/<Track>
+    Mirror the FLAC folder (Artist/Album/Track) next to android_root
+         → <flac_root>/<Artist>/<Album>/<Track>
+           (default flac_root: <parent of android_root>/_flac,
+            e.g. /storage/emulated/0/music/_flac)
     --delete also removes device files that no longer exist locally.
 
   --all (default): both of the above.
@@ -62,7 +64,9 @@ APPLE_DIR = SCRIPT_DIR / "Apple"
 ANDROID_DIR = SCRIPT_DIR / "Android"
 SOURCE_ROOT = SCRIPT_DIR
 ANDROID_ROOT = "/storage/emulated/0/music/_player"
+FLAC_ROOT = "/storage/emulated/0/music/_flac"
 DEVICE_ROOTS: dict[str, str] = {}
+DEVICE_FLAC_ROOTS: dict[str, str] = {}
 DEFAULT_DEVICE = "internal"
 PLAYLIST_NAMES: list[str] = []
 FLAC_SOURCE = Path("~/Library/Mobile Documents/com~apple~CloudDocs/Media/_flac").expanduser()
@@ -103,7 +107,7 @@ def load_config() -> None:
     """Load all paths and playlist names from JSON config file."""
     global PLAYER_ROOT, APPLE_DIR, ANDROID_DIR
     global SOURCE_ROOT, ANDROID_ROOT, PLAYLIST_NAMES
-    global DEVICE_ROOTS, DEFAULT_DEVICE, FLAC_SOURCE, FLAC_SUBDIR
+    global DEVICE_ROOTS, DEVICE_FLAC_ROOTS, DEFAULT_DEVICE, FLAC_SOURCE, FLAC_SUBDIR
 
     if not CONFIG_FILE.exists():
         sys.exit(f"Config file not found: {CONFIG_FILE}")
@@ -120,6 +124,7 @@ def load_config() -> None:
     SOURCE_ROOT = Path(paths.get("source_root", "")).expanduser()
     ANDROID_ROOT = raw.get("android_root", ANDROID_ROOT)
     DEVICE_ROOTS = {}
+    DEVICE_FLAC_ROOTS = {}
     for name, entry in raw.get("devices", {}).items():
         if not isinstance(name, str):
             continue
@@ -127,6 +132,9 @@ def load_config() -> None:
             root = entry.strip()
         elif isinstance(entry, dict):
             root = str(entry.get("android_root", "")).strip()
+            flac_root = str(entry.get("flac_root", "")).strip()
+            if flac_root:
+                DEVICE_FLAC_ROOTS[name.strip()] = flac_root.rstrip("/")
         else:
             root = ""
         if root:
@@ -214,8 +222,8 @@ def device_free_bytes(path: str) -> int:
     return -1
 
 
-def push(src: Path, rel: str) -> bool:
-    res = adb("push", str(src), f"{ANDROID_ROOT}/{rel}", check=False)
+def push(src: Path, dst: str) -> bool:
+    res = adb("push", str(src), dst, check=False)
     if res.returncode != 0:
         print(f"    ✗ push failed: {res.stderr.strip() or res.stdout.strip()}")
     return res.returncode == 0
@@ -229,7 +237,7 @@ def media_scan() -> None:
     if res.returncode != 0:
         adb_shell(
             "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE "
-            f"-d {shlex.quote('file://' + ANDROID_ROOT)}",
+            f"-d {shlex.quote('file://' + ANDROID_ROOT.rsplit('/', 1)[0])}",
             check=False,
         )
 
@@ -303,7 +311,8 @@ def plan_playlist(
         else:
             if dry_run:
                 print(f"    [dry-run] would push → {rel}")
-            pushes[key(rel)] = (rel, src)
+            dst = f"{ANDROID_ROOT}/{rel}"
+            pushes[key(dst)] = (dst, src)
             counts["queued"] += 1
 
         new_lines.append(f"{ANDROID_ROOT}/{rel}")
@@ -313,7 +322,8 @@ def plan_playlist(
     else:
         android_path.parent.mkdir(parents=True, exist_ok=True)
         android_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        pushes[key(playlist_rel)] = (playlist_rel, android_path)
+        dst = f"{ANDROID_ROOT}/{playlist_rel}"
+        pushes[key(dst)] = (dst, android_path)
         print(f"  wrote Android/{playlist_rel}")
 
     print(
@@ -348,17 +358,19 @@ def plan_player(
 # ─── --flac: mirror the FLAC folder ────────────────────────────────────────
 
 def plan_flac(
-    device_files: dict[str, tuple[str, int]],
     pushes: dict[str, tuple[str, Path]],
+    attached: bool,
     delete: bool,
     dry_run: bool,
 ) -> dict:
-    """Queue changed FLAC files in `pushes`; return counts and stale device files."""
+    """Queue changed FLAC files in `pushes`; return counts and stale device paths."""
     if not FLAC_SOURCE.exists():
         sys.exit(f"FLAC folder not found: {FLAC_SOURCE}")
     print(f"\n━━━ {FLAC_SUBDIR} {'(dry-run) ' if dry_run else ''}━━━")
     print(f"  source: {FLAC_SOURCE}")
+    print(f"  target: {FLAC_ROOT}")
 
+    device_files = list_device_files(FLAC_ROOT) if attached else {}
     counts = {"queued": 0, "already": 0, "evicted": 0, "total": 0}
     local: set[str] = set()
     for p in sorted(FLAC_SOURCE.rglob("*")):
@@ -369,7 +381,7 @@ def plan_flac(
                 print(f"    ⏬ not downloaded: {p.relative_to(FLAC_SOURCE)}")
                 counts["evicted"] += 1
             continue
-        rel = f"{FLAC_SUBDIR}/{p.relative_to(FLAC_SOURCE).as_posix()}"
+        rel = p.relative_to(FLAC_SOURCE).as_posix()
         local.add(key(rel))
         counts["total"] += 1
         if device_files.get(key(rel), ("", -1))[1] == p.stat().st_size:
@@ -377,18 +389,18 @@ def plan_flac(
         else:
             if dry_run:
                 print(f"    [dry-run] would push → {rel}")
-            pushes[key(rel)] = (rel, p)
+            dst = f"{FLAC_ROOT}/{rel}"
+            pushes[key(dst)] = (dst, p)
             counts["queued"] += 1
 
-    prefix = key(f"{FLAC_SUBDIR}/")
     stale = (
-        sorted(rel for k, (rel, _) in device_files.items() if k.startswith(prefix) and k not in local)
+        sorted(f"{FLAC_ROOT}/{rel}" for k, (rel, _) in device_files.items() if k not in local)
         if delete
         else []
     )
     if dry_run:
-        for k in stale:
-            print(f"    [dry-run] would delete → {k}")
+        for path in stale:
+            print(f"    [dry-run] would delete → {path}")
 
     print(
         f"  to push={counts['queued']}  already={counts['already']}  "
@@ -400,6 +412,7 @@ def plan_flac(
 # ─── ENTRY POINT ───────────────────────────────────────────────────────────
 
 def main() -> None:
+    global ANDROID_ROOT, FLAC_ROOT
     load_config()
 
     parser = argparse.ArgumentParser(
@@ -456,12 +469,17 @@ def main() -> None:
         if selected_device not in DEVICE_ROOTS:
             known = ", ".join(sorted(DEVICE_ROOTS))
             sys.exit(f"Unknown device '{selected_device}'. Available: {known}")
-        global ANDROID_ROOT
         ANDROID_ROOT = DEVICE_ROOTS[selected_device]
-    print(f"Using device '{selected_device}' with android_root={ANDROID_ROOT}  mode={args.mode}")
+    FLAC_ROOT = DEVICE_FLAC_ROOTS.get(
+        selected_device, f"{ANDROID_ROOT.rsplit('/', 1)[0]}/{FLAC_SUBDIR}"
+    )
+    print(
+        f"Using device '{selected_device}' with android_root={ANDROID_ROOT}  "
+        f"flac_root={FLAC_ROOT}  mode={args.mode}"
+    )
 
     attached = device_attached(required=not dry_run)
-    device_files = list_device_files(ANDROID_ROOT) if attached else {}
+    device_files = list_device_files(ANDROID_ROOT) if attached and args.mode != "flac" else {}
 
     pushes: dict[str, tuple[str, Path]] = {}
     results: list[dict] = []
@@ -469,7 +487,7 @@ def main() -> None:
     if args.mode in ("all", "player"):
         results += plan_player(device_files, pushes, selected_device, dry_run)
     if args.mode in ("all", "flac"):
-        flac = plan_flac(device_files, pushes, args.delete, dry_run)
+        flac = plan_flac(pushes, attached, args.delete, dry_run)
         stale = flac.pop("stale")
         results.append(flac)
 
@@ -484,16 +502,15 @@ def main() -> None:
 
     failed = 0
     if not dry_run:
-        for i, (rel, src) in enumerate(pushes.values(), 1):
-            print(f"  [{i}/{len(pushes)}] {rel}  ({human(src.stat().st_size)})")
-            if not push(src, rel):
+        for i, (dst, src) in enumerate(pushes.values(), 1):
+            print(f"  [{i}/{len(pushes)}] {dst}  ({human(src.stat().st_size)})")
+            if not push(src, dst):
                 failed += 1
-        for rel in stale:
-            print(f"  ✗ delete {rel}")
-            adb_shell(f"rm -f {shlex.quote(f'{ANDROID_ROOT}/{rel}')}", check=False)
+        for path in stale:
+            print(f"  ✗ delete {path}")
+            adb_shell(f"rm -f {shlex.quote(path)}", check=False)
         if stale:
-            flac_root = shlex.quote(f"{ANDROID_ROOT}/{FLAC_SUBDIR}")
-            adb_shell(f"find {flac_root} -mindepth 1 -type d -empty -delete", check=False)
+            adb_shell(f"find {shlex.quote(FLAC_ROOT)} -mindepth 1 -type d -empty -delete", check=False)
         if pushes or stale:
             media_scan()
 

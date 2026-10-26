@@ -107,7 +107,8 @@ Edit `sync_apple_to_android_config.json`:
 | `android_root` | Absolute path to the music folder **on the Android device** |
 | `devices.<name>.android_root` | Named Android roots you can select with `--device` |
 | `flac.source` | Local FLAC library (Artist/Album/Track) |
-| `flac.target_subdir` | Folder under `android_root` for the FLAC files (default `_flac`) |
+| `flac.target_subdir` | FLAC folder name, created next to `android_root` (default `_flac` → `/storage/emulated/0/music/_flac`) |
+| `devices.<name>.flac_root` | Optional absolute FLAC folder on that device, overriding the default |
 
 > All paths support `~` for the home directory.
 >
@@ -133,6 +134,7 @@ Use the wrapper for your platform — it always runs from the correct directory:
 ./sync.sh --player         # playlists and their tracks only
 ./sync.sh --flac           # FLAC folder only
 ./sync.sh --flac --delete  # also remove device files no longer in _flac
+                           # (careful: includes .lrc/.jpg the player downloaded)
 ./sync.sh --dry-run        # preview only — works without the phone attached
 ```
 
@@ -165,7 +167,8 @@ The script will:
 3. `--player`: read every `.m3u8` in `Apple/`, queue each referenced track for
    `<android_root>/<Artist>/<Album>/<Track>`, and write an Android-ready playlist to
    `Android/_playlists/<device>/` (pushed to `<android_root>/_playlists/<device>/`).
-4. `--flac`: queue every file in `flac.source` for `<android_root>/_flac/…`
+4. `--flac`: queue every file in `flac.source` for `<flac_root>/…`, by default
+   `<parent of android_root>/_flac` (e.g. `/storage/emulated/0/music/_flac`)
    (`.DS_Store` and iCloud placeholders are skipped).
 5. Check free space on the device, push only files that are missing or differ in size,
    and ask Android's media scanner to index them. Re-runs are idempotent.
