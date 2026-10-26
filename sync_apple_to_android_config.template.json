@@ -3,8 +3,7 @@
     "player_root": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player",
     "apple_dir": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player/Apple",
     "android_dir": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player/Android",
-    "source_root": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music",
-    "drive_target": "~/Library/CloudStorage/GoogleDrive-YOUR_EMAIL@gmail.com/My Drive/Music/_player"
+    "source_root": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music"
   },
   "default_device": "internal",
   "android_root": "/storage/emulated/0/music/_player",
@@ -15,5 +14,9 @@
     "a105": {
       "android_root": "/storage/6135-3539/music/_player"
     }
+  },
+  "flac": {
+    "source": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_flac",
+    "target_subdir": "_flac"
   }
 }

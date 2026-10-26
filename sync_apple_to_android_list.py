@@ -2,35 +2,54 @@
 """
 sync_apple_to_android_list.py
 
-Version : v2.0
+Version : v3.0
 Created : 2026-05-03
 
-Full pipeline: Apple Music → Android (Poweramp / Sony Music Player)
+Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
 
+  --player
     1. Read playlists in
          → ./Apple/*.m3u8
 
-    2. Copy every referenced track from the iCloud Music folder
-     → Google Drive: …/My Drive/Music/_player/<relative path>
-     (preserves Artist/Album/Track structure; idempotent)
+    2. Push every referenced track from the iCloud Music folder
+         → <android_root>/<Artist>/<Album>/<Track>
 
-  3. Write an Android-ready playlist with absolute paths for
-     Poweramp and Sony Music Player
-     → ./Android/<name>.m3u8          (local copy)
-     → Google Drive: …/_player/<name>.m3u8  (syncs to phone)
+    3. Write an Android-ready playlist with absolute paths
+         → ./Android/_playlists/<device>/<name>.m3u8   (local copy)
+         → <android_root>/_playlists/<device>/<name>.m3u8
+
+  --flac
+    Mirror the FLAC folder (Artist/Album/Track)
+         → <android_root>/_flac/<Artist>/<Album>/<Track>
+    --delete also removes device files that no longer exist locally.
+
+  --all (default): both of the above.
+
+Files are compared by size against what is already on the device, so
+re-runs only push what changed.
 
 Usage:
-    python3 sync_apple_to_android_list.py                   # default device (internal)
+    python3 sync_apple_to_android_list.py                   # --all, default device (internal)
+    python3 sync_apple_to_android_list.py --player          # playlists + their tracks
+    python3 sync_apple_to_android_list.py --flac            # FLAC folder only
+    python3 sync_apple_to_android_list.py --flac --delete   # also remove stale FLAC files
     python3 sync_apple_to_android_list.py --device a105     # use named device root
     python3 sync_apple_to_android_list.py --dry-run         # preview only
+
+Requires: adb on PATH, USB debugging enabled, exactly one device attached
+(or ANDROID_SERIAL set to pick one).
 """
 
 from __future__ import annotations
 
 import json
 import argparse
+import os
+import shlex
 import shutil
+import subprocess
 import sys
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -42,11 +61,12 @@ PLAYER_ROOT = SCRIPT_DIR
 APPLE_DIR = SCRIPT_DIR / "Apple"
 ANDROID_DIR = SCRIPT_DIR / "Android"
 SOURCE_ROOT = SCRIPT_DIR
-DRIVE_TARGET = SCRIPT_DIR
 ANDROID_ROOT = "/storage/emulated/0/music/_player"
 DEVICE_ROOTS: dict[str, str] = {}
 DEFAULT_DEVICE = "internal"
 PLAYLIST_NAMES: list[str] = []
+FLAC_SOURCE = Path("~/Library/Mobile Documents/com~apple~CloudDocs/Media/_flac").expanduser()
+FLAC_SUBDIR = "_flac"
 
 
 def extract_enabled_playlists(items: list[object]) -> list[str]:
@@ -74,14 +94,16 @@ def extract_enabled_playlists(items: list[object]) -> list[str]:
 
 # Apple Music subscription DRM tracks — cannot be played on Android.
 DRM_EXTENSIONS = {".m4p"}
+# Leave some headroom on the device after an adb push.
+FREE_SPACE_MARGIN = 500 * 1024 * 1024
 # ───────────────────────────────────────────────────────────────────────────
 
 
 def load_config() -> None:
     """Load all paths and playlist names from JSON config file."""
     global PLAYER_ROOT, APPLE_DIR, ANDROID_DIR
-    global SOURCE_ROOT, DRIVE_TARGET, ANDROID_ROOT, PLAYLIST_NAMES
-    global DEVICE_ROOTS, DEFAULT_DEVICE
+    global SOURCE_ROOT, ANDROID_ROOT, PLAYLIST_NAMES
+    global DEVICE_ROOTS, DEFAULT_DEVICE, FLAC_SOURCE, FLAC_SUBDIR
 
     if not CONFIG_FILE.exists():
         sys.exit(f"Config file not found: {CONFIG_FILE}")
@@ -96,7 +118,6 @@ def load_config() -> None:
     APPLE_DIR = Path(paths.get("apple_dir", str(PLAYER_ROOT / "Apple"))).expanduser()
     ANDROID_DIR = Path(paths.get("android_dir", str(PLAYER_ROOT / "Android"))).expanduser()
     SOURCE_ROOT = Path(paths.get("source_root", "")).expanduser()
-    DRIVE_TARGET = Path(paths.get("drive_target", "")).expanduser()
     ANDROID_ROOT = raw.get("android_root", ANDROID_ROOT)
     DEVICE_ROOTS = {}
     for name, entry in raw.get("devices", {}).items():
@@ -114,9 +135,104 @@ def load_config() -> None:
         DEVICE_ROOTS["internal"] = str(ANDROID_ROOT).rstrip("/")
     DEFAULT_DEVICE = str(raw.get("default_device", "internal")).strip() or "internal"
     PLAYLIST_NAMES = extract_enabled_playlists(raw.get("playlists", []))
+    flac = raw.get("flac", {})
+    FLAC_SOURCE = Path(flac.get("source", str(FLAC_SOURCE))).expanduser()
+    FLAC_SUBDIR = str(flac.get("target_subdir", FLAC_SUBDIR)).strip("/")
 
 
-# ─── Parse, mirror to Drive, write Android playlist ─────────────────────────
+def key(rel: str) -> str:
+    # macOS may hand us NFD names; compare in NFC so accents match the device.
+    return unicodedata.normalize("NFC", rel)
+
+
+def human(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+# ─── ADB ───────────────────────────────────────────────────────────────────
+
+def adb(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["adb", *args], capture_output=True, text=True, check=check)
+
+
+def adb_shell(cmd: str, check: bool = True) -> subprocess.CompletedProcess:
+    return adb("shell", cmd, check=check)
+
+
+def device_attached(required: bool) -> bool:
+    """Check for exactly one authorized device; exit if required and missing."""
+    def fail(msg: str) -> bool:
+        if required:
+            sys.exit(msg)
+        print(f"  ⚠ {msg}\n  ⚠ dry-run continues as if the device were empty.")
+        return False
+
+    if not shutil.which("adb"):
+        return fail("adb not found. Install with: brew install android-platform-tools")
+    lines = adb("devices").stdout.splitlines()[1:]
+    devices = [l.split("\t") for l in lines if "\t" in l]
+    if not devices:
+        return fail("No Android device attached. Plug in USB and enable USB debugging.")
+    if any(d[1] == "unauthorized" for d in devices):
+        return fail("Device not authorized — accept the 'Allow USB debugging' prompt on the phone.")
+    if len(devices) > 1 and not os.environ.get("ANDROID_SERIAL"):
+        serials = ", ".join(d[0] for d in devices)
+        return fail(f"Multiple devices attached ({serials}). Set ANDROID_SERIAL to choose one.")
+    return True
+
+
+def list_device_files(root: str) -> dict[str, int]:
+    """Return {nfc_rel: size} for every file under root on the device."""
+    q = shlex.quote(root)
+    res = adb_shell(f"[ -d {q} ] && find {q} -type f -exec stat -c '%s|%n' {{}} +", check=False)
+    files: dict[str, int] = {}
+    prefix = root.rstrip("/") + "/"
+    for line in res.stdout.splitlines():
+        size, _, path = line.partition("|")
+        if not path.startswith(prefix) or not size.isdigit():
+            continue
+        files[key(path[len(prefix):])] = int(size)
+    return files
+
+
+def device_free_bytes(path: str) -> int:
+    # Walk up until df accepts the path (target may not exist yet).
+    probe = path
+    while probe and probe != "/":
+        res = adb_shell(f"df -k {shlex.quote(probe)}", check=False)
+        rows = res.stdout.strip().splitlines()
+        if res.returncode == 0 and len(rows) >= 2:
+            return int(rows[-1].split()[3]) * 1024
+        probe = probe.rsplit("/", 1)[0]
+    return -1
+
+
+def push(src: Path, rel: str) -> bool:
+    res = adb("push", str(src), f"{ANDROID_ROOT}/{rel}", check=False)
+    if res.returncode != 0:
+        print(f"    ✗ push failed: {res.stderr.strip() or res.stdout.strip()}")
+    return res.returncode == 0
+
+
+def media_scan() -> None:
+    res = adb_shell(
+        "content call --uri content://media --method scan_volume --arg external_primary",
+        check=False,
+    )
+    if res.returncode != 0:
+        adb_shell(
+            "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE "
+            f"-d {shlex.quote('file://' + ANDROID_ROOT)}",
+            check=False,
+        )
+
+
+# ─── --player: parse playlists, plan track pushes, write Android playlist ──
 
 def parse_m3u8(path: Path) -> list[Path]:
     tracks: list[Path] = []
@@ -134,28 +250,33 @@ def is_icloud_placeholder(p: Path) -> bool:
     return (p.parent / f".{p.name}.icloud").exists()
 
 
-def process_playlist(apple_path: Path, dry_run: bool, device_name: str = "") -> dict:
+def plan_playlist(
+    apple_path: Path,
+    device_files: dict[str, int],
+    pushes: dict[str, Path],
+    device_name: str,
+    dry_run: bool,
+) -> dict:
+    """Queue missing tracks in `pushes` and write the Android playlist locally."""
     name = apple_path.stem
     print(f"\n━━━ {name} {'(dry-run) ' if dry_run else ''}━━━")
 
-    playlist_subdir = f"_playlists/{device_name}" if device_name else "_playlists"
-    android_path = ANDROID_DIR / playlist_subdir / f"{name}.m3u8"
-    drive_playlist = DRIVE_TARGET / playlist_subdir / f"{name}.m3u8"
+    playlist_rel = f"_playlists/{device_name}/{name}.m3u8"
+    android_path = ANDROID_DIR / playlist_rel
 
     tracks = parse_m3u8(apple_path)
     print(f"  {len(tracks)} tracks in Apple/{apple_path.name}")
 
-    # ── 2 & 3. Mirror tracks + build Android playlist ──────────────────────
     new_lines: list[str] = ["#EXTM3U", f"#PLAYLIST:{name}"]
     counts: dict[str, int] = {
-        "copied": 0, "already": 0, "drm": 0,
+        "queued": 0, "already": 0, "drm": 0,
         "evicted": 0, "missing": 0, "outside": 0,
         "total": len(tracks),
     }
 
     for src in tracks:
         try:
-            rel = src.relative_to(SOURCE_ROOT)
+            rel = src.relative_to(SOURCE_ROOT).as_posix()
         except ValueError:
             print(f"    ⊘ outside source root: {src}")
             counts["outside"] += 1
@@ -175,57 +296,93 @@ def process_playlist(apple_path: Path, dry_run: bool, device_name: str = "") -> 
             counts["missing"] += 1
             continue
 
-        dst = DRIVE_TARGET / rel
-        if dry_run:
-            if dst.exists() and dst.stat().st_size == src.stat().st_size:
-                counts["already"] += 1
-            else:
-                print(f"    [dry-run] would copy → {rel}")
-                counts["copied"] += 1
+        if device_files.get(key(rel)) == src.stat().st_size:
+            counts["already"] += 1
         else:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if dst.exists() and dst.stat().st_size == src.stat().st_size:
-                counts["already"] += 1
-            else:
-                shutil.copy2(src, dst)
-                counts["copied"] += 1
+            if dry_run:
+                print(f"    [dry-run] would push → {rel}")
+            pushes[key(rel)] = src
+            counts["queued"] += 1
 
-        new_lines.append(f"{ANDROID_ROOT}/{rel.as_posix()}")
+        new_lines.append(f"{ANDROID_ROOT}/{rel}")
 
-    # ── Write Android playlist ─────────────────────────────────────────────
     if dry_run:
-        print(f"  [dry-run] would write Android/{android_path.relative_to(ANDROID_DIR)}")
-        print(f"  [dry-run] would copy  → Drive/{drive_playlist.relative_to(DRIVE_TARGET)}")
+        print(f"  [dry-run] would write Android/{playlist_rel} and push it")
     else:
         android_path.parent.mkdir(parents=True, exist_ok=True)
         android_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        drive_playlist.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(android_path, drive_playlist)
-        print(f"  wrote Android/{android_path.relative_to(ANDROID_DIR)} + Drive copy")
+        pushes[key(playlist_rel)] = android_path
+        print(f"  wrote Android/{playlist_rel}")
 
     print(
-        f"  copied={counts['copied']}  already={counts['already']}  "
+        f"  to push={counts['queued']}  already={counts['already']}  "
         f"drm={counts['drm']}  evicted={counts['evicted']}  "
         f"missing={counts['missing']}  outside={counts['outside']}"
     )
     return {"name": name, **counts}
 
 
-# ─── PREFLIGHT ─────────────────────────────────────────────────────────────
-
-def preflight(dry_run: bool) -> None:
+def plan_player(
+    device_files: dict[str, int], pushes: dict[str, Path], device_name: str, dry_run: bool
+) -> list[dict]:
     if not SOURCE_ROOT.exists():
         sys.exit(f"Source music folder not found: {SOURCE_ROOT}")
     if not APPLE_DIR.exists():
         sys.exit(f"Apple folder not found: {APPLE_DIR}")
-    if not dry_run and not DRIVE_TARGET.parent.exists():
-        sys.exit(
-            f"Google Drive not mounted at: {DRIVE_TARGET.parent}\n"
-            "Make sure Google Drive for desktop is running."
-        )
-    if not dry_run:
-        for d in (ANDROID_DIR, DRIVE_TARGET):
-            d.mkdir(parents=True, exist_ok=True)
+
+    if PLAYLIST_NAMES:
+        playlist_files = [APPLE_DIR / f"{name}.m3u8" for name in PLAYLIST_NAMES]
+    else:
+        playlist_files = sorted(APPLE_DIR.glob("*.m3u8"))
+    if not playlist_files:
+        sys.exit(f"No playlists found in: {APPLE_DIR}")
+
+    return [plan_playlist(p, device_files, pushes, device_name, dry_run) for p in playlist_files]
+
+
+# ─── --flac: mirror the FLAC folder ────────────────────────────────────────
+
+def plan_flac(
+    device_files: dict[str, int], pushes: dict[str, Path], delete: bool, dry_run: bool
+) -> dict:
+    """Queue changed FLAC files in `pushes`; return counts and stale device files."""
+    if not FLAC_SOURCE.exists():
+        sys.exit(f"FLAC folder not found: {FLAC_SOURCE}")
+    print(f"\n━━━ {FLAC_SUBDIR} {'(dry-run) ' if dry_run else ''}━━━")
+    print(f"  source: {FLAC_SOURCE}")
+
+    counts = {"queued": 0, "already": 0, "evicted": 0, "total": 0}
+    local: set[str] = set()
+    for p in sorted(FLAC_SOURCE.rglob("*")):
+        if not p.is_file():
+            continue
+        if p.name.startswith("."):
+            if p.name.endswith(".icloud"):
+                print(f"    ⏬ not downloaded: {p.relative_to(FLAC_SOURCE)}")
+                counts["evicted"] += 1
+            continue
+        rel = key(f"{FLAC_SUBDIR}/{p.relative_to(FLAC_SOURCE).as_posix()}")
+        local.add(rel)
+        counts["total"] += 1
+        if device_files.get(rel) == p.stat().st_size:
+            counts["already"] += 1
+        else:
+            if dry_run:
+                print(f"    [dry-run] would push → {rel}")
+            pushes[rel] = p
+            counts["queued"] += 1
+
+    prefix = f"{FLAC_SUBDIR}/"
+    stale = sorted(k for k in device_files if k.startswith(prefix) and k not in local) if delete else []
+    if dry_run:
+        for k in stale:
+            print(f"    [dry-run] would delete → {k}")
+
+    print(
+        f"  to push={counts['queued']}  already={counts['already']}  "
+        f"to delete={len(stale)}  evicted={counts['evicted']}"
+    )
+    return {"name": FLAC_SUBDIR, **counts, "stale": stale}
 
 
 # ─── ENTRY POINT ───────────────────────────────────────────────────────────
@@ -234,12 +391,40 @@ def main() -> None:
     load_config()
 
     parser = argparse.ArgumentParser(
-        description="Sync Apple playlists to Android/Drive targets."
+        description="Sync playlists and the FLAC folder to an Android device over USB (adb)."
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--all",
+        dest="mode",
+        action="store_const",
+        const="all",
+        help="Sync playlists and the FLAC folder (default).",
+    )
+    mode.add_argument(
+        "--player",
+        dest="mode",
+        action="store_const",
+        const="player",
+        help="Sync Apple playlists and their tracks only.",
+    )
+    mode.add_argument(
+        "--flac",
+        dest="mode",
+        action="store_const",
+        const="flac",
+        help="Sync the FLAC folder only.",
+    )
+    parser.set_defaults(mode="all")
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview actions without copying files.",
+        help="Preview actions without pushing files.",
+    )
+    parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="Remove FLAC files on the device that no longer exist locally.",
     )
     parser.add_argument(
         "--device",
@@ -261,32 +446,60 @@ def main() -> None:
             sys.exit(f"Unknown device '{selected_device}'. Available: {known}")
         global ANDROID_ROOT
         ANDROID_ROOT = DEVICE_ROOTS[selected_device]
-    print(f"Using device '{selected_device}' with android_root={ANDROID_ROOT}")
+    print(f"Using device '{selected_device}' with android_root={ANDROID_ROOT}  mode={args.mode}")
 
-    preflight(dry_run)
-    if PLAYLIST_NAMES:
-        playlist_files = [APPLE_DIR / f"{name}.m3u8" for name in PLAYLIST_NAMES]
-    else:
-        playlist_files = sorted(APPLE_DIR.glob("*.m3u8"))
+    attached = device_attached(required=not dry_run)
+    device_files = list_device_files(ANDROID_ROOT) if attached else {}
 
-    if not playlist_files:
-        sys.exit(f"No playlists found in: {APPLE_DIR}")
+    pushes: dict[str, Path] = {}
+    results: list[dict] = []
+    stale: list[str] = []
+    if args.mode in ("all", "player"):
+        results += plan_player(device_files, pushes, selected_device, dry_run)
+    if args.mode in ("all", "flac"):
+        flac = plan_flac(device_files, pushes, args.delete, dry_run)
+        stale = flac.pop("stale")
+        results.append(flac)
 
-    results = [process_playlist(p, dry_run, selected_device) for p in playlist_files]
+    push_bytes = sum(p.stat().st_size for p in pushes.values())
+    print(f"\n  total to push: {len(pushes)} files ({human(push_bytes)})  to delete: {len(stale)}")
+    if attached:
+        free = device_free_bytes(ANDROID_ROOT)
+        if free >= 0:
+            print(f"  device free space: {human(free)}")
+            if push_bytes + FREE_SPACE_MARGIN > free:
+                sys.exit("Not enough free space on the device.")
+
+    failed = 0
+    if not dry_run:
+        for i, (rel, src) in enumerate(pushes.items(), 1):
+            print(f"  [{i}/{len(pushes)}] {rel}  ({human(src.stat().st_size)})")
+            if not push(src, rel):
+                failed += 1
+        for rel in stale:
+            print(f"  ✗ delete {rel}")
+            adb_shell(f"rm -f {shlex.quote(f'{ANDROID_ROOT}/{rel}')}", check=False)
+        if stale:
+            flac_root = shlex.quote(f"{ANDROID_ROOT}/{FLAC_SUBDIR}")
+            adb_shell(f"find {flac_root} -mindepth 1 -type d -empty -delete", check=False)
+        if pushes or stale:
+            media_scan()
 
     print("\n═══ overall ═══")
     width = max(len(r["name"]) for r in results)
     for r in results:
-        if "error" in r:
-            print(f"  {r['name']:<{width}}  ERROR: {r['error']}")
-        else:
-            print(
-                f"  {r['name']:<{width}}  "
-                f"tracks={r['total']:>4}  "
-                f"copied={r['copied']:>4}  already={r['already']:>4}  "
-                f"missing={r['missing']:>3}  drm={r['drm']:>3}  "
-                f"evicted={r['evicted']:>3}"
-            )
+        line = (
+            f"  {r['name']:<{width}}  "
+            f"files={r['total']:>4}  "
+            f"to push={r['queued']:>4}  already={r['already']:>4}  "
+            f"evicted={r['evicted']:>3}"
+        )
+        if "missing" in r:
+            line += f"  missing={r['missing']:>3}  drm={r['drm']:>3}"
+        print(line)
+    if failed:
+        print(f"  ✗ {failed} push(es) failed")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
