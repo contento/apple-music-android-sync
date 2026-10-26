@@ -142,7 +142,8 @@ def load_config() -> None:
 
 def key(rel: str) -> str:
     # macOS may hand us NFD names; compare in NFC so accents match the device.
-    return unicodedata.normalize("NFC", rel)
+    # Android shared storage is case-insensitive, so fold case as well.
+    return unicodedata.normalize("NFC", rel).casefold()
 
 
 def human(n: int) -> str:
@@ -186,17 +187,18 @@ def device_attached(required: bool) -> bool:
     return True
 
 
-def list_device_files(root: str) -> dict[str, int]:
-    """Return {nfc_rel: size} for every file under root on the device."""
+def list_device_files(root: str) -> dict[str, tuple[str, int]]:
+    """Return {key: (rel, size)} for every file under root on the device."""
     q = shlex.quote(root)
     res = adb_shell(f"[ -d {q} ] && find {q} -type f -exec stat -c '%s|%n' {{}} +", check=False)
-    files: dict[str, int] = {}
+    files: dict[str, tuple[str, int]] = {}
     prefix = root.rstrip("/") + "/"
     for line in res.stdout.splitlines():
         size, _, path = line.partition("|")
         if not path.startswith(prefix) or not size.isdigit():
             continue
-        files[key(path[len(prefix):])] = int(size)
+        rel = path[len(prefix):]
+        files[key(rel)] = (rel, int(size))
     return files
 
 
@@ -252,8 +254,8 @@ def is_icloud_placeholder(p: Path) -> bool:
 
 def plan_playlist(
     apple_path: Path,
-    device_files: dict[str, int],
-    pushes: dict[str, Path],
+    device_files: dict[str, tuple[str, int]],
+    pushes: dict[str, tuple[str, Path]],
     device_name: str,
     dry_run: bool,
 ) -> dict:
@@ -296,12 +298,12 @@ def plan_playlist(
             counts["missing"] += 1
             continue
 
-        if device_files.get(key(rel)) == src.stat().st_size:
+        if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
             counts["already"] += 1
         else:
             if dry_run:
                 print(f"    [dry-run] would push → {rel}")
-            pushes[key(rel)] = src
+            pushes[key(rel)] = (rel, src)
             counts["queued"] += 1
 
         new_lines.append(f"{ANDROID_ROOT}/{rel}")
@@ -311,7 +313,7 @@ def plan_playlist(
     else:
         android_path.parent.mkdir(parents=True, exist_ok=True)
         android_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        pushes[key(playlist_rel)] = android_path
+        pushes[key(playlist_rel)] = (playlist_rel, android_path)
         print(f"  wrote Android/{playlist_rel}")
 
     print(
@@ -323,7 +325,10 @@ def plan_playlist(
 
 
 def plan_player(
-    device_files: dict[str, int], pushes: dict[str, Path], device_name: str, dry_run: bool
+    device_files: dict[str, tuple[str, int]],
+    pushes: dict[str, tuple[str, Path]],
+    device_name: str,
+    dry_run: bool,
 ) -> list[dict]:
     if not SOURCE_ROOT.exists():
         sys.exit(f"Source music folder not found: {SOURCE_ROOT}")
@@ -343,7 +348,10 @@ def plan_player(
 # ─── --flac: mirror the FLAC folder ────────────────────────────────────────
 
 def plan_flac(
-    device_files: dict[str, int], pushes: dict[str, Path], delete: bool, dry_run: bool
+    device_files: dict[str, tuple[str, int]],
+    pushes: dict[str, tuple[str, Path]],
+    delete: bool,
+    dry_run: bool,
 ) -> dict:
     """Queue changed FLAC files in `pushes`; return counts and stale device files."""
     if not FLAC_SOURCE.exists():
@@ -361,19 +369,23 @@ def plan_flac(
                 print(f"    ⏬ not downloaded: {p.relative_to(FLAC_SOURCE)}")
                 counts["evicted"] += 1
             continue
-        rel = key(f"{FLAC_SUBDIR}/{p.relative_to(FLAC_SOURCE).as_posix()}")
-        local.add(rel)
+        rel = f"{FLAC_SUBDIR}/{p.relative_to(FLAC_SOURCE).as_posix()}"
+        local.add(key(rel))
         counts["total"] += 1
-        if device_files.get(rel) == p.stat().st_size:
+        if device_files.get(key(rel), ("", -1))[1] == p.stat().st_size:
             counts["already"] += 1
         else:
             if dry_run:
                 print(f"    [dry-run] would push → {rel}")
-            pushes[rel] = p
+            pushes[key(rel)] = (rel, p)
             counts["queued"] += 1
 
-    prefix = f"{FLAC_SUBDIR}/"
-    stale = sorted(k for k in device_files if k.startswith(prefix) and k not in local) if delete else []
+    prefix = key(f"{FLAC_SUBDIR}/")
+    stale = (
+        sorted(rel for k, (rel, _) in device_files.items() if k.startswith(prefix) and k not in local)
+        if delete
+        else []
+    )
     if dry_run:
         for k in stale:
             print(f"    [dry-run] would delete → {k}")
@@ -451,7 +463,7 @@ def main() -> None:
     attached = device_attached(required=not dry_run)
     device_files = list_device_files(ANDROID_ROOT) if attached else {}
 
-    pushes: dict[str, Path] = {}
+    pushes: dict[str, tuple[str, Path]] = {}
     results: list[dict] = []
     stale: list[str] = []
     if args.mode in ("all", "player"):
@@ -461,7 +473,7 @@ def main() -> None:
         stale = flac.pop("stale")
         results.append(flac)
 
-    push_bytes = sum(p.stat().st_size for p in pushes.values())
+    push_bytes = sum(src.stat().st_size for _, src in pushes.values())
     print(f"\n  total to push: {len(pushes)} files ({human(push_bytes)})  to delete: {len(stale)}")
     if attached:
         free = device_free_bytes(ANDROID_ROOT)
@@ -472,7 +484,7 @@ def main() -> None:
 
     failed = 0
     if not dry_run:
-        for i, (rel, src) in enumerate(pushes.items(), 1):
+        for i, (rel, src) in enumerate(pushes.values(), 1):
             print(f"  [{i}/{len(pushes)}] {rel}  ({human(src.stat().st_size)})")
             if not push(src, rel):
                 failed += 1
