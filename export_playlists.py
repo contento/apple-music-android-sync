@@ -30,8 +30,9 @@ import tempfile
 import unicodedata
 from pathlib import Path
 
+import player_config
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "sync_apple_to_android_config.json"
 
 # JXA: playlist summary, plus the tracks of the playlists named in argv.
 JXA = """
@@ -101,11 +102,8 @@ def music(names: list[str]) -> dict:
 
 
 def apple_dir() -> Path:
-    try:
-        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return Path(cfg["paths"]["apple_dir"]).expanduser()
-    except (OSError, KeyError, ValueError):
-        return SCRIPT_DIR / "Apple"
+    apple = player_config.load_config().get("paths", {}).get("apple_dir")
+    return Path(apple).expanduser() if apple else SCRIPT_DIR / "Apple"
 
 
 def file_name(playlist: str) -> str:

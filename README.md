@@ -30,8 +30,9 @@ _player/
 ├── tag_variants.ps1                        ← PowerShell wrapper for find_tag_variants.py (Windows / iTunes)
 ├── find_tag_variants.py                    ← report Music.app tags that differ only by case/accents
 ├── clean_music_library.py                  ← list duplicate library entries (macOS, read-only)
-├── sync_apple_to_android_config.json       ← your local config (git-ignored)
-└── sync_apple_to_android_config.template.json  ← safe template to commit
+├── player_config.py                        ← shared config loader
+├── sync_apple_to_android_config.toml       ← your local config (git-ignored)
+└── sync_apple_to_android_config.template.toml  ← safe template to commit
 ```
 
 ---
@@ -95,35 +96,35 @@ Copy the template and fill in your details:
 
 ```bash
 # macOS / Linux
-cp sync_apple_to_android_config.template.json sync_apple_to_android_config.json
+cp sync_apple_to_android_config.template.toml sync_apple_to_android_config.toml
 ```
 
 ```powershell
 # Windows (PowerShell)
-Copy-Item sync_apple_to_android_config.template.json sync_apple_to_android_config.json
+Copy-Item sync_apple_to_android_config.template.toml sync_apple_to_android_config.toml
 ```
 
-Edit `sync_apple_to_android_config.json`:
+Edit `sync_apple_to_android_config.toml` (`#` starts a comment):
 
-```json
-{
-  "paths": {
-    "player_root": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player",
-    "apple_dir":   "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player/Apple",
-    "android_dir": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player/Android",
-    "source_root": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music"
-  },
-  "default_device": "internal",
-  "android_root": "/storage/emulated/0/music/_player",
-  "devices": {
-    "internal": {
-      "android_root": "/storage/emulated/0/music/_player"
-    },
-    "a105": {
-      "android_root": "/storage/6135-3539/music/_player"
-    }
-  }
-}
+```toml
+default_device = "internal"
+android_root = "/storage/emulated/0/music/_player"
+
+[paths]
+player_root = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player"
+apple_dir   = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player/Apple"
+android_dir = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player/Android"
+source_root = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music"
+
+[devices.internal]
+android_root = "/storage/emulated/0/music/_player"
+
+[devices.a105]   # SD card
+android_root = "/storage/6135-3539/music/_player"
+
+[flac]
+source = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_flac"
+target_subdir = "_flac"
 ```
 
 | Key | Description |
@@ -140,6 +141,9 @@ Edit `sync_apple_to_android_config.json`:
 | `devices.<name>.flac_root` | Optional absolute FLAC folder on that device, overriding the default |
 
 > All paths support `~` for the home directory.
+>
+> Reading TOML needs Python 3.11 or newer. An older `sync_apple_to_android_config.json`
+> with the same keys still works when there is no `.toml` file.
 >
 > `android_root` is kept for backward compatibility and also acts as the fallback for `internal`.
 
@@ -288,8 +292,8 @@ short words (`de`, `la`, `the`, `of`…) lowercase mid-name (`toto` → `Toto`,
 rules pick wrong, list the right spelling in the config — it is applied to every
 matching value:
 
-```json
-"tag_overrides": ["Diomedes Díaz", "Juan Zaizar"]
+```toml
+tag_overrides = ["Diomedes Díaz", "Juan Zaizar"]
 ```
 
 When Music.app saves a track it re-cases other fields to spellings it already

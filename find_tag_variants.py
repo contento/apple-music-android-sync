@@ -49,8 +49,9 @@ import time
 import unicodedata
 from pathlib import Path
 
+import player_config
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_FILE = SCRIPT_DIR / "sync_apple_to_android_config.json"
 UNDO_DIR = SCRIPT_DIR / "tag_undo"
 
 # JXA: fetch each tag for all library tracks in one Apple Event per field.
@@ -206,9 +207,7 @@ def read_tags() -> dict[str, list[str]]:
 
 
 def load_overrides() -> dict[str, str]:
-    if not CONFIG_FILE.exists():
-        return {}
-    raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    raw = player_config.load_config()
     return {fold(s): unicodedata.normalize("NFC", s) for s in raw.get("tag_overrides", [])}
 
 

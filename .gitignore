@@ -1,4 +1,5 @@
 # Personal config with private paths and email
+sync_apple_to_android_config.toml
 sync_apple_to_android_config.json
 
 # Generated folders — Apple/ contains exported playlists, Android/ is created by the script

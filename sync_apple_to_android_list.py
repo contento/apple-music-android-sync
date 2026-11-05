@@ -44,7 +44,6 @@ Requires: adb on PATH, USB debugging enabled, exactly one device attached
 
 from __future__ import annotations
 
-import json
 import argparse
 import os
 import shlex
@@ -55,9 +54,10 @@ import unicodedata
 import urllib.parse
 from pathlib import Path
 
+import player_config
+
 # ─── CONFIG ────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_FILE = SCRIPT_DIR / "sync_apple_to_android_config.json"
 
 PLAYER_ROOT = SCRIPT_DIR
 APPLE_DIR = SCRIPT_DIR / "Apple"
@@ -104,18 +104,12 @@ FREE_SPACE_MARGIN = 500 * 1024 * 1024
 
 
 def load_config() -> None:
-    """Load all paths and playlist names from JSON config file."""
+    """Load all paths and playlist names from the config file."""
     global PLAYER_ROOT, APPLE_DIR, ANDROID_DIR
     global SOURCE_ROOT, ANDROID_ROOT, PLAYLIST_NAMES
     global DEVICE_ROOTS, DEVICE_FLAC_ROOTS, DEFAULT_DEVICE, FLAC_SOURCE, FLAC_SUBDIR
 
-    if not CONFIG_FILE.exists():
-        sys.exit(f"Config file not found: {CONFIG_FILE}")
-
-    try:
-        raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        sys.exit(f"Invalid JSON in {CONFIG_FILE}: {exc}")
+    raw = player_config.load_config(required=True)
 
     paths = raw.get("paths", {})
     PLAYER_ROOT = Path(paths.get("player_root", str(SCRIPT_DIR))).expanduser()
