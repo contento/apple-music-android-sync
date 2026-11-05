@@ -23,6 +23,9 @@ _player/
 ├── sync.sh                                 ← shell wrapper (macOS / Linux)
 ├── sync.ps1                                ← PowerShell wrapper (Windows)
 ├── sync_apple_to_android_list.py
+├── tag_variants.sh                         ← shell wrapper for find_tag_variants.py (macOS)
+├── tag_variants.ps1                        ← PowerShell wrapper for find_tag_variants.py (Windows / iTunes)
+├── find_tag_variants.py                    ← report Music.app tags that differ only by case/accents
 ├── sync_apple_to_android_config.json       ← your local config (git-ignored)
 └── sync_apple_to_android_config.template.json  ← safe template to commit
 ```
@@ -196,6 +199,62 @@ The generated playlists use absolute paths matching `android_root` and work with
 - **Sony Music** (Walkman app)
 
 If new tracks don't show up, trigger a library rescan in the player.
+
+---
+
+## Finding duplicate spellings in Music.app
+
+Players group by tags, so `Miguel Bose` and `Miguel Bosé` (or `toto` and `Toto`)
+show up as two artists. To list every tag value that differs only by case,
+accents or spacing:
+
+```bash
+./tag_variants.sh                  # artist, albumArtist, composer, genre, album, name
+./tag_variants.sh albumArtist      # only some fields
+```
+
+```powershell
+.\tag_variants.ps1                 # Windows: reads from iTunes
+.\tag_variants.ps1 albumArtist
+```
+
+On Windows this needs **iTunes**: the Apple Music app from the Microsoft Store
+has no scripting interface. Reading tags over COM is slower than on macOS,
+so a large library takes a while.
+
+Each line is one group with its track counts, most common first:
+
+```text
+── Album Artist: 16 groups
+   Miguel Bose (47)  |  Miguel Bosé (18)
+```
+
+Fix the less common spelling in Music.app (search, select, `⌘I`) or iTunes
+(`Ctrl+I`), then re-export the playlists. On macOS the first run asks for
+permission to control Music.app.
+
+On macOS the script can fix them for you:
+
+```bash
+./tag_variants.sh --fix                              # show the plan, ask, then apply
+./tag_variants.sh --fix --yes                        # apply without asking
+./tag_variants.sh --undo tag_undo/20261105-144134.json   # restore a run
+```
+
+Per word, the accented form wins (`Bose` → `Bosé`), real words are capitalised and
+short words (`de`, `la`, `the`, `of`…) lowercase mid-name (`toto` → `Toto`,
+`Heal The World` → `Heal the World`), and extra spaces are removed. When the
+rules pick wrong, list the right spelling in the config — it is applied to every
+matching value:
+
+```json
+"tag_overrides": ["Diomedes Díaz", "Juan Zaizar"]
+```
+
+When Music.app saves a track it re-cases other fields to spellings it already
+knows, so run `--fix` again until it reports *Nothing to fix*. If "Keep Music
+Media folder organized" is on, renamed artists/albums move files to new
+folders: **re-export the playlists** before the next sync.
 
 ---
 

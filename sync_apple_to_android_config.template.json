@@ -18,5 +18,8 @@
   "flac": {
     "source": "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_flac",
     "target_subdir": "_flac"
-  }
+  },
+  "tag_overrides": [
+    "Diomedes Díaz"
+  ]
 }
