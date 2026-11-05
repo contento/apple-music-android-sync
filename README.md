@@ -23,6 +23,9 @@ _player/
 ├── sync.sh                                 ← shell wrapper (macOS / Linux)
 ├── sync.ps1                                ← PowerShell wrapper (Windows)
 ├── sync_apple_to_android_list.py
+├── export_playlists.sh                     ← shell wrapper for export_playlists.py (macOS)
+├── export_playlists.ps1                    ← PowerShell wrapper for export_playlists.py (Windows / iTunes)
+├── export_playlists.py                     ← export Music.app / iTunes playlists to Apple/
 ├── tag_variants.sh                         ← shell wrapper for find_tag_variants.py (macOS)
 ├── tag_variants.ps1                        ← PowerShell wrapper for find_tag_variants.py (Windows / iTunes)
 ├── find_tag_variants.py                    ← report Music.app tags that differ only by case/accents
@@ -34,6 +37,28 @@ _player/
 ---
 
 ## Step 1 — Export playlists from Music (macOS)
+
+### Scripted (recommended)
+
+```bash
+./export_playlists.sh               # re-export the playlists already in Apple/
+./export_playlists.sh Balada Tango  # export these playlists
+./export_playlists.sh --all         # every playlist you made
+./export_playlists.sh --list        # list playlists with track counts
+```
+
+```powershell
+.\export_playlists.ps1              # Windows: reads from iTunes
+.\export_playlists.ps1 --all
+```
+
+Files are written in the same format as Music's own export. Like Music, it
+only writes tracks that have a local file; cloud-only entries are skipped and
+counted (`(N cloud-only skipped)`). Smart playlists are
+ignored everywhere. Files in `Apple/` with no matching
+playlist are left alone.
+
+### By hand
 
 1. Open **Music.app**.
 2. Select the playlist in the sidebar.
