@@ -26,6 +26,7 @@ _player/
 ├── tag_variants.sh                         ← shell wrapper for find_tag_variants.py (macOS)
 ├── tag_variants.ps1                        ← PowerShell wrapper for find_tag_variants.py (Windows / iTunes)
 ├── find_tag_variants.py                    ← report Music.app tags that differ only by case/accents
+├── clean_music_library.py                  ← list duplicate library entries (macOS, read-only)
 ├── sync_apple_to_android_config.json       ← your local config (git-ignored)
 └── sync_apple_to_android_config.template.json  ← safe template to commit
 ```
@@ -188,6 +189,21 @@ drm=N      DRM-protected .m4p files (skipped — not playable on Android)
 ```
 
 Paths outside `source_root` are reported inline as `⊘ outside source root`.
+
+---
+
+## Duplicate library entries (cloud with "!")
+
+iCloud marks a second library entry for the same file as *duplicate*; Music
+shows it with a cloud-and-exclamation icon. To list them:
+
+```bash
+python3 clean_music_library.py --dead-entries
+```
+
+Remove them in Music.app: select, `⌘⌫`, and choose **Keep File**. The script
+does not delete on purpose — removing a track through scripting can move the
+shared file to the Trash.
 
 ---
 
