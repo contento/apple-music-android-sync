@@ -28,10 +28,11 @@ Music.app (macOS) → exported `.m3u8` playlists in `Apple/` →
 These come from real failures ("no songs available" in FiiO Music):
 
 1. **Playlist paths must match the device's spelling exactly.** FiiO Music
-   (and similar players) match each playlist line against their media
-   library by exact string. Android shared storage is case-insensitive, so a
-   wrong path still *opens* the file — tests like `adb shell test -f` pass
-   while the player shows nothing. Always verify against the media library
+   looks each line up in its own song database by exact path (and falls
+   back to reading the file); other players match against Android's media
+   library. Android shared storage is case-insensitive, so a wrong path
+   still *opens* the file — `adb shell test -f` passes while a player may
+   show the track twice or not at all. Verify against the media library
    (see below), not the file system.
 2. **Folder case:** the real folder is `/storage/emulated/0/Music` (capital
    M). `resolve_device_case()` fixes the configured roots at runtime; keep it.
@@ -85,9 +86,24 @@ print("OK" if bad == 0 else f"FAIL: {bad} paths not in library")
 EOF
 ```
 
-Every playlist must report N/N. Newly pushed tracks only appear in the
+Every file must be named `*.playlist.m3u8` and every playlist must report
+N/N. Newly pushed tracks only appear in the
 library after the media scan the script triggers; if a fresh push shows
 missing, wait a few seconds and re-run the check.
+
+If FiiO Music still imports nothing, read its log while the user runs
+**Import m3u playlist**:
+
+```sh
+adb logcat -c   # then import on the device, then:
+adb logcat -d | grep -E 'PlayListManager|M3uHelper' | grep -E 'FILENAME|importM3uFileToDb|TRUESONG NULL|SAFPATH'
+```
+
+`FILENAME:` lines with no `importM3uFileToDb:` means the file names are
+wrong; `TRUESONG NULL` means a path could not be read. To check the app's
+logic after a FiiO Music update: pull the APK (`adb shell pm path
+com.fiio.music`), decompile with `jadx` (`brew install jadx`) and read
+`com/fiio/music/util/PlayListManager.java`.
 
 `missing=N` in the sync summary means the file is absent **on the Mac**
 (e.g. the playlist was re-exported with tracks not downloaded); that is a
