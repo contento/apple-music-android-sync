@@ -17,8 +17,9 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
     3. Write an Android-ready playlist with absolute paths
          → ./Android/_playlists/<device>/<name>.m3u8   (local copy)
          → <android_root>/_playlists/<device>/<name>.m3u8
-         → <playlist_copy_dir>/<name>.m3u8   (optional, e.g. FiiO Music's
-           import folder)
+         → <playlist_copy_dir>/<name>.playlist.m3u8   (optional: FiiO
+           Music's "Import m3u playlist" reads only *.playlist.m3u8 files
+           in /storage/emulated/0/FiiOMusic/playlist)
        Paths use the device's own spelling (case and accents), because
        players such as FiiO Music match playlist entries against their
        library by exact string.
@@ -380,7 +381,8 @@ def plan_playlist(
 
         new_lines.append(f"{ANDROID_ROOT}/{dev_rel}")
 
-    copy_dst = f"{PLAYLIST_COPY_DIR}/{name}.m3u8" if PLAYLIST_COPY_DIR else ""
+    # FiiO Music only imports "<name>.playlist.m3u8" and names the playlist <name>.
+    copy_dst = f"{PLAYLIST_COPY_DIR}/{name}.playlist.m3u8" if PLAYLIST_COPY_DIR else ""
     if dry_run:
         print(f"  [dry-run] would write Android/{playlist_rel} and push it")
         if copy_dst:

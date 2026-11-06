@@ -42,8 +42,12 @@ These come from real failures ("no songs available" in FiiO Music):
 4. **Comparisons use `key()`** (NFC + casefold). Lookups go through `key()`;
    what gets *written* is the device's real spelling.
 5. **`playlist_copy_dir`** (per device) copies each playlist to FiiO Music's
-   import folder `/storage/emulated/0/FiiOMusic/playlist`. The script never
-   deletes there.
+   import folder `/storage/emulated/0/FiiOMusic/playlist` as
+   `<name>.playlist.m3u8`. FiiO Music's "Import m3u playlist" ignores any
+   other file name (found by decompiling `PlayListManager.B()`, app 3.3.4)
+   and names the playlist from the part before `.playlist.m3u8`; a playlist
+   named `Favorites` goes into FiiO's favorites instead. The script never
+   deletes in that folder.
 6. **`--delete` is destructive** on the device. Run with `--dry-run` first
    and show the user the list. Never touch hidden files or other devices'
    `_playlists/` folders.

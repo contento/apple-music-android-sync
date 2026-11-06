@@ -118,7 +118,7 @@ source_root = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music"
 
 [devices.internal]
 android_root = "/storage/emulated/0/Music/_player"
-playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"   # optional
+playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"   # optional, FiiO Music import
 
 [devices.a105]   # SD card
 android_root = "/storage/6135-3539/music/_player"
