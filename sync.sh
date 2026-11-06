@@ -3,6 +3,7 @@
 #   ./sync.sh                  # --all: playlists + FLAC (default)
 #   ./sync.sh --player         # playlists and their tracks only
 #   ./sync.sh --flac           # FLAC folder only
+#   ./sync.sh --player --delete  # also remove device tracks gone from the Mac
 #   ./sync.sh --flac --delete  # also remove device files gone from _flac
 #   ./sync.sh --dry-run        # preview only
 set -euo pipefail

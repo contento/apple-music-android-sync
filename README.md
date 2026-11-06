@@ -166,6 +166,7 @@ Use the wrapper for your platform — it always runs from the correct directory:
 ./sync.sh                  # --all: playlists + FLAC (default)
 ./sync.sh --player         # playlists and their tracks only
 ./sync.sh --flac           # FLAC folder only
+./sync.sh --player --delete  # also remove device tracks no longer on the Mac
 ./sync.sh --flac --delete  # also remove device files no longer in _flac
                            # (careful: includes .lrc/.jpg the player downloaded)
 ./sync.sh --dry-run        # preview only — works without the phone attached
@@ -203,7 +204,12 @@ The script will:
 4. `--flac`: queue every file in `flac.source` for `<flac_root>/…`, by default
    `<parent of android_root>/_flac` (e.g. `/storage/emulated/0/music/_flac`)
    (`.DS_Store` and iCloud placeholders are skipped).
-5. Check free space on the device, push only files that are missing or differ in size,
+5. `--delete` (with `--player`, `--flac` or `--all`): remove device files that are gone locally.
+   Under `android_root` that is tracks no longer in `source_root` (renamed, moved or removed
+   on the Mac, e.g. after a tag fix) with the `.lrc`/`.jpg` beside them, files in folders with
+   no tracks left, and this device's playlists no longer in `Apple/`. Hidden files and other
+   devices' `_playlists/` folders are left alone. Run with `--dry-run` first to see the list.
+6. Check free space on the device, push only files that are missing or differ in size,
    and ask Android's media scanner to index them. Re-runs are idempotent.
 
 ### Output columns

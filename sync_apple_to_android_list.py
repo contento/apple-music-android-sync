@@ -23,7 +23,9 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
          → <flac_root>/<Artist>/<Album>/<Track>
            (default flac_root: <parent of android_root>/_flac,
             e.g. /storage/emulated/0/music/_flac)
-    --delete also removes device files that no longer exist locally.
+    --delete (with --player, --flac or --all) also removes device files
+    that no longer exist locally: renamed/removed tracks with their .lrc/.jpg,
+    and this device's playlists no longer in Apple/.
 
   --all (default): both of the above.
 
@@ -34,6 +36,7 @@ Usage:
     python3 sync_apple_to_android_list.py                   # --all, default device (internal)
     python3 sync_apple_to_android_list.py --player          # playlists + their tracks
     python3 sync_apple_to_android_list.py --flac            # FLAC folder only
+    python3 sync_apple_to_android_list.py --player --delete # also remove stale tracks
     python3 sync_apple_to_android_list.py --flac --delete   # also remove stale FLAC files
     python3 sync_apple_to_android_list.py --device a105     # use named device root
     python3 sync_apple_to_android_list.py --dry-run         # preview only
@@ -98,8 +101,11 @@ def extract_enabled_playlists(items: list[object]) -> list[str]:
 
 # Apple Music subscription DRM tracks — cannot be played on Android.
 DRM_EXTENSIONS = {".m4p"}
+AUDIO_EXTENSIONS = {".m4a", ".mp3", ".flac", ".wav", ".aac", ".aif", ".aiff", ".alac", ".ogg", ".opus"}
 # Leave some headroom on the device after an adb push.
 FREE_SPACE_MARGIN = 500 * 1024 * 1024
+# Device files removed per adb call with --delete.
+DELETE_BATCH = 50
 # ───────────────────────────────────────────────────────────────────────────
 
 
@@ -349,6 +355,58 @@ def plan_player(
     return [plan_playlist(p, device_files, pushes, device_name, dry_run) for p in playlist_files]
 
 
+def plan_player_stale(
+    device_files: dict[str, tuple[str, int]],
+    playlists: list[str],
+    device_name: str,
+    dry_run: bool,
+) -> list[str]:
+    """Device paths under android_root to delete with --delete.
+
+    - tracks whose file no longer exists in source_root (renamed, moved or
+      removed on the Mac), plus the .lrc/.jpg the player saved beside them;
+    - other files in folders that have no tracks left (e.g. cover.jpg);
+    - this device's playlists that are no longer in Apple/.
+    Other devices' playlist folders are left alone.
+    """
+    local: set[str] = set()
+    for root, _, files in os.walk(SOURCE_ROOT):
+        for f in files:
+            if f.startswith(".") and f.endswith(".icloud"):
+                f = f[1:-len(".icloud")]  # not downloaded, but still in the library
+            local.add(key(os.path.relpath(os.path.join(root, f), SOURCE_ROOT)))
+
+    playlist_dir = key(f"_playlists/{device_name}/")
+    keep_playlists = {key(f"_playlists/{device_name}/{n}.m3u8") for n in playlists}
+    stale: list[str] = []
+    tracks: dict[str, str] = {}  # key → rel, audio files only
+    others: dict[str, str] = {}
+    for k, (rel, _) in device_files.items():
+        if k.startswith(key("_playlists/")):
+            if k.startswith(playlist_dir) and k not in keep_playlists:
+                stale.append(rel)
+        elif os.path.basename(k).startswith("."):
+            continue  # hidden files belong to the player app (e.g. .ttxfolder)
+        elif os.path.splitext(k)[1] in AUDIO_EXTENSIONS:
+            tracks[k] = rel
+        else:
+            others[k] = rel
+
+    gone = {k for k in tracks if k not in local}
+    stale += [tracks[k] for k in gone]
+    stems_gone = {os.path.splitext(k)[0] for k in gone}
+    dirs_kept = {os.path.dirname(k) for k in tracks if k not in gone}
+    stale += [rel for k, rel in others.items()
+              if os.path.splitext(k)[0] in stems_gone or os.path.dirname(k) not in dirs_kept]
+
+    stale = sorted(f"{ANDROID_ROOT}/{rel}" for rel in stale)
+    if dry_run:
+        for path in stale:
+            print(f"    [dry-run] would delete → {path}")
+    print(f"\n  _player: to delete={len(stale)}  ({len(gone)} tracks no longer on the Mac)")
+    return stale
+
+
 # ─── --flac: mirror the FLAC folder ────────────────────────────────────────
 
 def plan_flac(
@@ -443,7 +501,7 @@ def main() -> None:
     parser.add_argument(
         "--delete",
         action="store_true",
-        help="Remove FLAC files on the device that no longer exist locally.",
+        help="Remove device files that no longer exist locally (_player and/or FLAC).",
     )
     parser.add_argument(
         "--device",
@@ -478,11 +536,17 @@ def main() -> None:
     pushes: dict[str, tuple[str, Path]] = {}
     results: list[dict] = []
     stale: list[str] = []
+    stale_dirs: list[str] = []
     if args.mode in ("all", "player"):
         results += plan_player(device_files, pushes, selected_device, dry_run)
+        if args.delete:
+            names = [r["name"] for r in results]
+            stale += plan_player_stale(device_files, names, selected_device, dry_run)
+            stale_dirs.append(ANDROID_ROOT)
     if args.mode in ("all", "flac"):
         flac = plan_flac(pushes, attached, args.delete, dry_run)
-        stale = flac.pop("stale")
+        stale += flac.pop("stale")
+        stale_dirs.append(FLAC_ROOT)
         results.append(flac)
 
     push_bytes = sum(src.stat().st_size for _, src in pushes.values())
@@ -500,11 +564,14 @@ def main() -> None:
             print(f"  [{i}/{len(pushes)}] {dst}  ({human(src.stat().st_size)})")
             if not push(src, dst):
                 failed += 1
-        for path in stale:
-            print(f"  ✗ delete {path}")
-            adb_shell(f"rm -f {shlex.quote(path)}", check=False)
+        for i in range(0, len(stale), DELETE_BATCH):
+            batch = stale[i:i + DELETE_BATCH]
+            for path in batch:
+                print(f"  ✗ delete {path}")
+            adb_shell("rm -f " + " ".join(shlex.quote(p) for p in batch), check=False)
         if stale:
-            adb_shell(f"find {shlex.quote(FLAC_ROOT)} -mindepth 1 -type d -empty -delete", check=False)
+            for root in stale_dirs:
+                adb_shell(f"find {shlex.quote(root)} -mindepth 1 -type d -empty -delete", check=False)
         if pushes or stale:
             media_scan()
 
