@@ -108,7 +108,7 @@ Edit `sync_apple_to_android_config.toml` (`#` starts a comment):
 
 ```toml
 default_device = "internal"
-android_root = "/storage/emulated/0/music/_player"
+android_root = "/storage/emulated/0/Music/_player"
 
 [paths]
 player_root = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player"
@@ -117,7 +117,8 @@ android_dir = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_player/Andr
 source_root = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music"
 
 [devices.internal]
-android_root = "/storage/emulated/0/music/_player"
+android_root = "/storage/emulated/0/Music/_player"
+playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"   # optional
 
 [devices.a105]   # SD card
 android_root = "/storage/6135-3539/music/_player"
@@ -137,8 +138,9 @@ target_subdir = "_flac"
 | `android_root` | Absolute path to the music folder **on the Android device** |
 | `devices.<name>.android_root` | Named Android roots you can select with `--device` |
 | `flac.source` | Local FLAC library (Artist/Album/Track) |
-| `flac.target_subdir` | FLAC folder name, created next to `android_root` (default `_flac` → `/storage/emulated/0/music/_flac`) |
+| `flac.target_subdir` | FLAC folder name, created next to `android_root` (default `_flac` → `/storage/emulated/0/Music/_flac`) |
 | `devices.<name>.flac_root` | Optional absolute FLAC folder on that device, overriding the default |
+| `devices.<name>.playlist_copy_dir` | Optional folder that also gets a copy of each playlist, e.g. FiiO Music's import folder `/storage/emulated/0/FiiOMusic/playlist` |
 
 > All paths support `~` for the home directory.
 >
@@ -202,7 +204,7 @@ The script will:
    `<android_root>/<Artist>/<Album>/<Track>`, and write an Android-ready playlist to
    `Android/_playlists/<device>/` (pushed to `<android_root>/_playlists/<device>/`).
 4. `--flac`: queue every file in `flac.source` for `<flac_root>/…`, by default
-   `<parent of android_root>/_flac` (e.g. `/storage/emulated/0/music/_flac`)
+   `<parent of android_root>/_flac` (e.g. `/storage/emulated/0/Music/_flac`)
    (`.DS_Store` and iCloud placeholders are skipped).
 5. `--delete` (with `--player`, `--flac` or `--all`): remove device files that are gone locally.
    Under `android_root` that is tracks no longer in `source_root` (renamed, moved or removed
@@ -244,10 +246,12 @@ shared file to the Trash.
 
 ## Android players
 
-The generated playlists use absolute paths matching `android_root` and work with:
+The generated playlists use absolute paths matching `android_root`, spelled exactly as
+on the device (folder case and accent encoding), and work with:
 
 - **Poweramp**
 - **Sony Music** (Walkman app)
+- **FiiO Music**: set `playlist_copy_dir`, then import from Playlists in the app
 
 If new tracks don't show up, trigger a library rescan in the player.
 

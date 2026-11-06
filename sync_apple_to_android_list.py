@@ -17,6 +17,11 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
     3. Write an Android-ready playlist with absolute paths
          → ./Android/_playlists/<device>/<name>.m3u8   (local copy)
          → <android_root>/_playlists/<device>/<name>.m3u8
+         → <playlist_copy_dir>/<name>.m3u8   (optional, e.g. FiiO Music's
+           import folder)
+       Paths use the device's own spelling (case and accents), because
+       players such as FiiO Music match playlist entries against their
+       library by exact string.
 
   --flac
     Mirror the FLAC folder (Artist/Album/Track) next to android_root
@@ -70,6 +75,8 @@ ANDROID_ROOT = "/storage/emulated/0/music/_player"
 FLAC_ROOT = "/storage/emulated/0/music/_flac"
 DEVICE_ROOTS: dict[str, str] = {}
 DEVICE_FLAC_ROOTS: dict[str, str] = {}
+DEVICE_PLAYLIST_COPY_DIRS: dict[str, str] = {}
+PLAYLIST_COPY_DIR = ""
 DEFAULT_DEVICE = "internal"
 PLAYLIST_NAMES: list[str] = []
 FLAC_SOURCE = Path("~/Library/Mobile Documents/com~apple~CloudDocs/Media/_flac").expanduser()
@@ -113,7 +120,7 @@ def load_config() -> None:
     """Load all paths and playlist names from the config file."""
     global PLAYER_ROOT, APPLE_DIR, ANDROID_DIR
     global SOURCE_ROOT, ANDROID_ROOT, PLAYLIST_NAMES
-    global DEVICE_ROOTS, DEVICE_FLAC_ROOTS, DEFAULT_DEVICE, FLAC_SOURCE, FLAC_SUBDIR
+    global DEVICE_ROOTS, DEVICE_FLAC_ROOTS, DEVICE_PLAYLIST_COPY_DIRS, DEFAULT_DEVICE, FLAC_SOURCE, FLAC_SUBDIR
 
     raw = player_config.load_config(required=True)
 
@@ -125,6 +132,7 @@ def load_config() -> None:
     ANDROID_ROOT = raw.get("android_root", ANDROID_ROOT)
     DEVICE_ROOTS = {}
     DEVICE_FLAC_ROOTS = {}
+    DEVICE_PLAYLIST_COPY_DIRS = {}
     for name, entry in raw.get("devices", {}).items():
         if not isinstance(name, str):
             continue
@@ -135,6 +143,9 @@ def load_config() -> None:
             flac_root = str(entry.get("flac_root", "")).strip()
             if flac_root:
                 DEVICE_FLAC_ROOTS[name.strip()] = flac_root.rstrip("/")
+            copy_dir = str(entry.get("playlist_copy_dir", "")).strip()
+            if copy_dir:
+                DEVICE_PLAYLIST_COPY_DIRS[name.strip()] = copy_dir.rstrip("/")
         else:
             root = ""
         if root:
@@ -193,6 +204,56 @@ def device_attached(required: bool) -> bool:
         serials = ", ".join(d[0] for d in devices)
         return fail(f"Multiple devices attached ({serials}). Set ANDROID_SERIAL to choose one.")
     return True
+
+
+def resolve_device_case(path: str) -> str:
+    """Return `path` with each existing component spelled as on the device.
+
+    Shared storage is case-insensitive, so "/storage/emulated/0/music" opens
+    the "Music" folder, but players that match playlists against their
+    library need the exact spelling the media scanner recorded.
+    """
+    cur = ""
+    parts = [p for p in path.split("/") if p]
+    for i, part in enumerate(parts):
+        res = adb_shell(f"ls -a {shlex.quote(cur or '/')}", check=False)
+        names = {key(n): n for n in res.stdout.replace("\r", "").splitlines() if n}
+        if res.returncode != 0 or not names:
+            cur += "/" + part  # unreadable parent (e.g. /storage/emulated): keep as given
+            continue
+        match = names.get(key(part))
+        if match is None:
+            return "/".join([cur, *parts[i:]])  # rest does not exist yet
+        cur += "/" + match
+    return cur or "/"
+
+
+def device_dir_map(device_files: dict[str, tuple[str, int]]) -> dict[str, str]:
+    """Return {key(dir): dir} for every folder that holds a device file."""
+    dirs: dict[str, str] = {}
+    for rel, _ in device_files.values():
+        parts = rel.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            d = "/".join(parts[:i])
+            dirs.setdefault(key(d), d)
+    return dirs
+
+
+def device_spelling(
+    rel: str,
+    device_files: dict[str, tuple[str, int]],
+    device_dirs: dict[str, str],
+) -> str:
+    """Spell `rel` as the device does; new parts are written in NFC."""
+    hit = device_files.get(key(rel))
+    if hit:
+        return hit[0]
+    parts = unicodedata.normalize("NFC", rel).split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        d = device_dirs.get(key("/".join(parts[:i])))
+        if d:
+            return "/".join([d, *parts[i:]])
+    return "/".join(parts)
 
 
 def list_device_files(root: str) -> dict[str, tuple[str, int]]:
@@ -263,6 +324,7 @@ def is_icloud_placeholder(p: Path) -> bool:
 def plan_playlist(
     apple_path: Path,
     device_files: dict[str, tuple[str, int]],
+    device_dirs: dict[str, str],
     pushes: dict[str, tuple[str, Path]],
     device_name: str,
     dry_run: bool,
@@ -306,24 +368,30 @@ def plan_playlist(
             counts["missing"] += 1
             continue
 
+        dev_rel = device_spelling(rel, device_files, device_dirs)
         if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
             counts["already"] += 1
         else:
             if dry_run:
-                print(f"    [dry-run] would push → {rel}")
-            dst = f"{ANDROID_ROOT}/{rel}"
+                print(f"    [dry-run] would push → {dev_rel}")
+            dst = f"{ANDROID_ROOT}/{dev_rel}"
             pushes[key(dst)] = (dst, src)
             counts["queued"] += 1
 
-        new_lines.append(f"{ANDROID_ROOT}/{rel}")
+        new_lines.append(f"{ANDROID_ROOT}/{dev_rel}")
 
+    copy_dst = f"{PLAYLIST_COPY_DIR}/{name}.m3u8" if PLAYLIST_COPY_DIR else ""
     if dry_run:
         print(f"  [dry-run] would write Android/{playlist_rel} and push it")
+        if copy_dst:
+            print(f"  [dry-run] would copy it to {copy_dst}")
     else:
         android_path.parent.mkdir(parents=True, exist_ok=True)
         android_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         dst = f"{ANDROID_ROOT}/{playlist_rel}"
         pushes[key(dst)] = (dst, android_path)
+        if copy_dst:
+            pushes[key(copy_dst)] = (copy_dst, android_path)
         print(f"  wrote Android/{playlist_rel}")
 
     print(
@@ -352,7 +420,11 @@ def plan_player(
     if not playlist_files:
         sys.exit(f"No playlists found in: {APPLE_DIR}")
 
-    return [plan_playlist(p, device_files, pushes, device_name, dry_run) for p in playlist_files]
+    device_dirs = device_dir_map(device_files)
+    return [
+        plan_playlist(p, device_files, device_dirs, pushes, device_name, dry_run)
+        for p in playlist_files
+    ]
 
 
 def plan_player_stale(
@@ -464,7 +536,7 @@ def plan_flac(
 # ─── ENTRY POINT ───────────────────────────────────────────────────────────
 
 def main() -> None:
-    global ANDROID_ROOT, FLAC_ROOT
+    global ANDROID_ROOT, FLAC_ROOT, PLAYLIST_COPY_DIR
     load_config()
 
     parser = argparse.ArgumentParser(
@@ -522,15 +594,24 @@ def main() -> None:
             known = ", ".join(sorted(DEVICE_ROOTS))
             sys.exit(f"Unknown device '{selected_device}'. Available: {known}")
         ANDROID_ROOT = DEVICE_ROOTS[selected_device]
+    attached = device_attached(required=not dry_run)
+    if attached:
+        ANDROID_ROOT = resolve_device_case(ANDROID_ROOT)
     FLAC_ROOT = DEVICE_FLAC_ROOTS.get(
         selected_device, f"{ANDROID_ROOT.rsplit('/', 1)[0]}/{FLAC_SUBDIR}"
     )
+    PLAYLIST_COPY_DIR = DEVICE_PLAYLIST_COPY_DIRS.get(selected_device, "")
+    if attached:
+        FLAC_ROOT = resolve_device_case(FLAC_ROOT)
+        if PLAYLIST_COPY_DIR:
+            PLAYLIST_COPY_DIR = resolve_device_case(PLAYLIST_COPY_DIR)
     print(
         f"Using device '{selected_device}' with android_root={ANDROID_ROOT}  "
         f"flac_root={FLAC_ROOT}  mode={args.mode}"
     )
+    if PLAYLIST_COPY_DIR:
+        print(f"  playlists also copied to {PLAYLIST_COPY_DIR}")
 
-    attached = device_attached(required=not dry_run)
     device_files = list_device_files(ANDROID_ROOT) if attached and args.mode != "flac" else {}
 
     pushes: dict[str, tuple[str, Path]] = {}
