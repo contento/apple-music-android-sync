@@ -2,7 +2,7 @@
 """
 export_playlists.py
 
-Version : v1.1
+Version : v1.2
 Created : 2026-11-05
 
 Export playlists from Music.app (macOS) or iTunes (Windows, over COM) to
@@ -35,8 +35,24 @@ import player_config
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+# JXA helper: file paths of a track list. One bulk read is fast, but a single
+# dead entry (file gone from disk) or a cloud-only track makes it throw; then
+# read each track on its own.
+JXA_PATHS = """
+function paths(t) {
+  try { return t.location().map(l => l ? l.toString() : ''); }
+  catch (e) {
+    const n = t.length, r = [];
+    for (let j = 0; j < n; j++) {
+      try { const l = t[j].location(); r.push(l ? l.toString() : ''); } catch (e2) { r.push(''); }
+    }
+    return r;
+  }
+}
+"""
+
 # JXA: playlist summary, plus the tracks of the playlists named in argv.
-JXA = """
+JXA = JXA_PATHS + """
 function run(argv) {
   const m = Application('Music');
   const pls = m.userPlaylists;
@@ -45,19 +61,6 @@ function run(argv) {
                                                  count: pls[i].tracks.length})),
                tracks: {}};
   if (!argv.length) return JSON.stringify(out);
-
-  // One bulk read is fast, but a single dead entry (file gone from disk) or a
-  // cloud-only track makes it throw; then read each track on its own.
-  const paths = t => {
-    try { return t.location().map(l => l ? l.toString() : ''); }
-    catch (e) {
-      const n = t.length, r = [];
-      for (let j = 0; j < n; j++) {
-        try { const l = t[j].location(); r.push(l ? l.toString() : ''); } catch (e2) { r.push(''); }
-      }
-      return r;
-    }
-  };
 
   for (const name of argv) {
     const i = names.indexOf(name);
@@ -96,19 +99,48 @@ ConvertTo-Json -Compress -Depth 5 -InputObject ([ordered]@{ playlists = $playlis
 """
 
 
-def music(names: list[str]) -> dict:
+# The file path of every track in the library (cloud-only tracks have none).
+JXA_LIBRARY = JXA_PATHS + """
+function run() {
+  return JSON.stringify(paths(Application('Music').libraryPlaylists[0].fileTracks).filter(p => p));
+}
+"""
+
+ITUNES_LIBRARY_PS = """
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$itunes = New-Object -ComObject iTunes.Application
+$list = [Collections.Generic.List[string]]::new()
+foreach ($t in $itunes.LibraryPlaylist.Tracks) {
+    if ($t.Kind -ne 1) { continue }   # 1 = file track
+    try { if ($t.Location) { $list.Add([string]$t.Location) } } catch { }
+}
+ConvertTo-Json -Compress -InputObject $list.ToArray()
+"""
+
+
+def run_music(jxa: str, ps: str, args: list[str], env: dict | None = None):
+    """Run a script against Music.app (macOS) or iTunes (Windows); return its JSON."""
     if sys.platform == "win32":
         app = "iTunes"
-        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ITUNES_PS]
-        env = {**os.environ, "EXPORT_PLAYLISTS": json.dumps(names)}
+        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]
+        env = {**os.environ, **(env or {})}
     else:
         app = "Music.app"
-        cmd = ["osascript", "-l", "JavaScript", "-e", JXA, *names]
+        cmd = ["osascript", "-l", "JavaScript", "-e", jxa, *args]
         env = None
     res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
     if res.returncode != 0:
         sys.exit(f"Could not read {app}: {res.stderr.strip()}")
     return json.loads(res.stdout)
+
+
+def music(names: list[str]) -> dict:
+    return run_music(JXA, ITUNES_PS, names, {"EXPORT_PLAYLISTS": json.dumps(names)})
+
+
+def library_paths() -> list[str]:
+    """File path of every track in the Music.app / iTunes library."""
+    return run_music(JXA_LIBRARY, ITUNES_LIBRARY_PS, [])
 
 
 def apple_dir() -> Path:

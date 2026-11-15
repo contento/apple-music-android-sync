@@ -2,14 +2,16 @@
 """
 sync_apple_to_android_list.py
 
-Version : v3.1
+Version : v3.2
 Created : 2026-05-03
 
 Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
 
   --player
-    1. Push the whole Music library (every audio file in source_root,
-       except DRM .m4p) → <android_root>/<Artist>/<Album>/<Track>
+    1. Push the whole Music library: every track Music.app (or iTunes)
+       lists under source_root, except DRM .m4p. Files in the folder that
+       the library does not list are skipped.
+         → <android_root>/<Artist>/<Album>/<Track>
 
     2. Read playlists in
          → ./Apple/*.m3u8
@@ -30,7 +32,7 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
            (default flac_root: <parent of android_root>/_flac,
             e.g. /storage/emulated/0/music/_flac)
     --delete (with --player, --flac or --all) also removes device files
-    that no longer exist locally: renamed/removed tracks with their .lrc/.jpg,
+    that are no longer in the library / FLAC folder: renamed/removed tracks with their .lrc/.jpg,
     and this device's playlists no longer in Apple/.
 
   --all (default): both of the above.
@@ -63,6 +65,7 @@ import unicodedata
 import urllib.parse
 from pathlib import Path
 
+import export_playlists
 import player_config
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────
@@ -414,46 +417,69 @@ def plan_playlist(
     return {"name": name, **counts}
 
 
+def read_library() -> list[Path]:
+    """Every track file in the Music.app (or iTunes) library, under source_root.
+
+    Files in the music folder that the library does not list (removed from
+    Music.app with "Keep File", or never added) are not synced.
+    """
+    paths = [Path(unicodedata.normalize("NFC", p)) for p in export_playlists.library_paths()]
+    if not paths:
+        sys.exit("The Music library returned no tracks; refusing to sync.")
+    inside = []
+    for p in paths:
+        try:
+            p.relative_to(SOURCE_ROOT)
+            inside.append(p)
+        except ValueError:
+            pass
+    if not inside:
+        sys.exit(f"No library tracks are under source_root ({SOURCE_ROOT}); check the config.")
+    return sorted(set(inside))
+
+
 def plan_library(
+    library: list[Path],
     device_files: dict[str, tuple[str, int]],
     device_dirs: dict[str, str],
     pushes: dict[str, tuple[str, Path]],
     dry_run: bool,
 ) -> dict:
-    """Queue every audio file in source_root that is missing or changed on the device."""
+    """Queue every library track that is missing or changed on the device."""
     print(f"\n━━━ library {'(dry-run) ' if dry_run else ''}━━━")
-    print(f"  source: {SOURCE_ROOT}")
+    print(f"  source: Music library, {len(library)} files under {SOURCE_ROOT}")
     counts = {"queued": 0, "already": 0, "drm": 0, "evicted": 0, "missing": 0, "total": 0}
-    for root, dirs, files in os.walk(SOURCE_ROOT):
-        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
-        for f in sorted(files):
-            if f.startswith("."):
-                if f.endswith(".icloud"):
-                    counts["evicted"] += 1
-                continue
-            src = Path(root) / f
-            ext = src.suffix.lower()
-            if ext in DRM_EXTENSIONS:
-                counts["drm"] += 1
-                continue
-            if ext not in AUDIO_EXTENSIONS:
-                continue
-            counts["total"] += 1
-            rel = src.relative_to(SOURCE_ROOT).as_posix()
-            if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
-                counts["already"] += 1
-                continue
-            dst = f"{ANDROID_ROOT}/{device_spelling(rel, device_files, device_dirs)}"
-            pushes[key(dst)] = (dst, src)
-            counts["queued"] += 1
+    for src in library:
+        ext = src.suffix.lower()
+        if ext in DRM_EXTENSIONS:
+            counts["drm"] += 1
+            continue
+        if ext not in AUDIO_EXTENSIONS:
+            continue  # e.g. music videos
+        counts["total"] += 1
+        rel = src.relative_to(SOURCE_ROOT).as_posix()
+        if is_icloud_placeholder(src):
+            counts["evicted"] += 1
+            continue
+        if not src.exists():
+            print(f"    ✗ missing: {rel}")
+            counts["missing"] += 1
+            continue
+        if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
+            counts["already"] += 1
+            continue
+        dst = f"{ANDROID_ROOT}/{device_spelling(rel, device_files, device_dirs)}"
+        pushes[key(dst)] = (dst, src)
+        counts["queued"] += 1
     print(
         f"  tracks={counts['total']}  to push={counts['queued']}  already={counts['already']}  "
-        f"drm={counts['drm']}  evicted={counts['evicted']}"
+        f"drm={counts['drm']}  evicted={counts['evicted']}  missing={counts['missing']}"
     )
     return {"name": "library", **counts}
 
 
 def plan_player(
+    library: list[Path],
     device_files: dict[str, tuple[str, int]],
     pushes: dict[str, tuple[str, Path]],
     device_name: str,
@@ -473,16 +499,17 @@ def plan_player(
         sys.exit(f"No playlists found in: {APPLE_DIR}")
 
     device_dirs = device_dir_map(device_files)
-    library = plan_library(device_files, device_dirs, pushes, dry_run)
+    summary = plan_library(library, device_files, device_dirs, pushes, dry_run)
     # Tracks are already queued by plan_library; pushes is keyed by
     # destination, so playlists only add their own .m3u8 files.
-    return [library] + [
+    return [summary] + [
         plan_playlist(p, device_files, device_dirs, pushes, device_name, dry_run)
         for p in playlist_files
     ]
 
 
 def plan_player_stale(
+    library: list[Path],
     device_files: dict[str, tuple[str, int]],
     playlists: list[str],
     device_name: str,
@@ -490,18 +517,13 @@ def plan_player_stale(
 ) -> list[str]:
     """Device paths under android_root to delete with --delete.
 
-    - tracks whose file no longer exists in source_root (renamed, moved or
-      removed on the Mac), plus the .lrc/.jpg the player saved beside them;
+    - tracks that are not in the Music library (renamed, moved or removed
+      on the Mac), plus the .lrc/.jpg the player saved beside them;
     - other files in folders that have no tracks left (e.g. cover.jpg);
     - this device's playlists that are no longer in Apple/.
     Other devices' playlist folders are left alone.
     """
-    local: set[str] = set()
-    for root, _, files in os.walk(SOURCE_ROOT):
-        for f in files:
-            if f.startswith(".") and f.endswith(".icloud"):
-                f = f[1:-len(".icloud")]  # not downloaded, but still in the library
-            local.add(key(os.path.relpath(os.path.join(root, f), SOURCE_ROOT)))
+    local = {key(p.relative_to(SOURCE_ROOT).as_posix()) for p in library}
 
     playlist_dir = key(f"_playlists/{device_name}/")
     keep_playlists = {key(f"_playlists/{device_name}/{n}.m3u8") for n in playlists}
@@ -530,7 +552,7 @@ def plan_player_stale(
     if dry_run:
         for path in stale:
             print(f"    [dry-run] would delete → {path}")
-    print(f"\n  _player: to delete={len(stale)}  ({len(gone)} tracks no longer on the Mac)")
+    print(f"\n  _player: to delete={len(stale)}  ({len(gone)} tracks not in the Music library)")
     return stale
 
 
@@ -674,10 +696,11 @@ def main() -> None:
     stale: list[str] = []
     stale_dirs: list[str] = []
     if args.mode in ("all", "player"):
-        results += plan_player(device_files, pushes, selected_device, dry_run)
+        library = read_library()
+        results += plan_player(library, device_files, pushes, selected_device, dry_run)
         if args.delete:
             names = [r["name"] for r in results[1:]]  # skip the library row
-            stale += plan_player_stale(device_files, names, selected_device, dry_run)
+            stale += plan_player_stale(library, device_files, names, selected_device, dry_run)
             stale_dirs.append(ANDROID_ROOT)
     if args.mode in ("all", "flac"):
         flac = plan_flac(pushes, attached, args.delete, dry_run)

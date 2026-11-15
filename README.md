@@ -204,8 +204,9 @@ The script will:
 
 1. Check that exactly one authorized device is attached (set `ANDROID_SERIAL` if several are).
 2. List the files already under `android_root` on the device, with sizes.
-3. `--player`: queue every audio file in `source_root` (the whole library, except DRM
-   `.m4p`) for `<android_root>/<Artist>/<Album>/<Track>`; then read every `.m3u8` in
+3. `--player`: read the track list from Music.app (iTunes on Windows) and queue every
+   track under `source_root` (except DRM `.m4p`) for `<android_root>/<Artist>/<Album>/<Track>`.
+   Files in the music folder that the library does not list are not copied. then read every `.m3u8` in
    `Apple/` and write an Android-ready playlist pointing at those files to
    `Android/_playlists/<device>/` (pushed to `<android_root>/_playlists/<device>/`).
    Playlists do not decide what is copied.
@@ -213,8 +214,8 @@ The script will:
    `<parent of android_root>/_flac` (e.g. `/storage/emulated/0/Music/_flac`)
    (`.DS_Store` and iCloud placeholders are skipped).
 5. `--delete` (with `--player`, `--flac` or `--all`): remove device files that are gone locally.
-   Under `android_root` that is tracks no longer in `source_root` (renamed, moved or removed
-   on the Mac, e.g. after a tag fix) with the `.lrc`/`.jpg` beside them, files in folders with
+   Under `android_root` that is tracks no longer in the Music library (renamed, moved or
+   removed on the Mac, e.g. after a tag fix, or files the library never listed) with the `.lrc`/`.jpg` beside them, files in folders with
    no tracks left, and this device's playlists no longer in `Apple/`. Hidden files and other
    devices' `_playlists/` folders are left alone. Run with `--dry-run` first to see the list.
 6. Check free space on the device, push only files that are missing or differ in size,
@@ -245,8 +246,25 @@ shows it with a cloud-and-exclamation icon. To list them:
 python3 clean_music_library.py --dead-entries
 ```
 
-Remove them in Music.app: select, `⌘⌫`, and choose **Keep File**. The script
-does not delete on purpose — removing a track through scripting can move the
+Remove them in Music.app: select, `⌘⌫`, and choose **Keep File**.
+
+Songs imported twice as separate files (Music.app names the second one
+`<Track> 1.m4a`, or the two share artist, album, title and length):
+
+```bash
+python3 clean_music_library.py --copies
+```
+
+Each group shows bitrate, size, length, plays and the playlists in `Apple/`
+that use each file; `★` marks the one to keep (in a playlist, then not marked
+"duplicate" by iCloud, then highest bitrate, then most plays). Songs with both a lossless (FLAC, ALAC, WAV, AIFF) and a
+compressed version are left alone. Delete the others with `⌘⌫` → **Move to Trash**,
+or run `python3 clean_music_library.py --copies --fix`, which does that for
+you (record in `tag_undo/copies-<timestamp>.json`; files go to the Trash, so
+Finder's Put Back restores them). Then re-export the playlists, then run `./sync.sh --delete --dry-run` and
+`./sync.sh --delete` to drop them from the device.
+
+The script does not delete on purpose — removing a track through scripting can move the
 shared file to the Trash.
 
 ---

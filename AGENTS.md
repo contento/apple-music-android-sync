@@ -11,14 +11,16 @@ Music.app (macOS) → exported `.m3u8` playlists in `Apple/` →
 `adb` and writes Android playlists. The main device is a **FiiO M21**
 (`sd` in the config: its SD card at `/storage/external_sd`, MediaStore
 volume `external_sd`), played with **FiiO Music**. `--player` copies the
-**whole library** (`source_root`); playlists only reference those files.
+**whole Music library**: the tracks Music.app lists under `source_root`
+(`export_playlists.library_paths()`), not every file in the folder.
+Playlists only reference those files.
 
 | File | Role |
 |------|------|
 | `export_playlists.py` (`.sh`/`.ps1`) | Music.app / iTunes → `Apple/*.m3u8` |
 | `sync_apple_to_android_list.py` (`sync.sh`/`.ps1`) | Push the whole library, FLAC folder and playlists to the device |
 | `find_tag_variants.py` (`tag_variants.sh`/`.ps1`) | Find/fix tags differing only by case/accents; undo files in `tag_undo/` |
-| `clean_music_library.py` | Read-only lister of dead/duplicate library entries |
+| `clean_music_library.py` | Read-only lister of dead library entries (`--dead-entries`) and songs held twice (`--copies`) |
 | `backup.sh` | Copy `Apple/`, `Android/` and the config `.toml` to an ISO-dated folder in iCloud Drive |
 | `player_config.py` | Loads `sync_apple_to_android_config.toml` (shared by all scripts) |
 
