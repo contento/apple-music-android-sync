@@ -2,7 +2,7 @@
 """
 export_playlists.py
 
-Version : v1.0
+Version : v1.1
 Created : 2026-11-05
 
 Export playlists from Music.app (macOS) or iTunes (Windows, over COM) to
@@ -10,7 +10,8 @@ Export playlists from Music.app (macOS) or iTunes (Windows, over COM) to
 Export Playlist… (UTF-8, CR line endings). Smart playlists are ignored.
 
 Like Music's own export, only tracks with a local file are written;
-cloud-only entries are skipped and counted.
+cloud-only entries and entries whose file is gone are skipped and
+counted.
 
 Usage:
     python3 export_playlists.py               # re-export playlists already in Apple/
@@ -45,16 +46,25 @@ function run(argv) {
                tracks: {}};
   if (!argv.length) return JSON.stringify(out);
 
-  const ft = m.libraryPlaylists[0].fileTracks;
-  const loc = {}, pid = ft.persistentID(), l = ft.location();
-  pid.forEach((p, i) => { if (l[i]) loc[p] = l[i].toString(); });
+  // One bulk read is fast, but a single dead entry (file gone from disk) or a
+  // cloud-only track makes it throw; then read each track on its own.
+  const paths = t => {
+    try { return t.location().map(l => l ? l.toString() : ''); }
+    catch (e) {
+      const n = t.length, r = [];
+      for (let j = 0; j < n; j++) {
+        try { const l = t[j].location(); r.push(l ? l.toString() : ''); } catch (e2) { r.push(''); }
+      }
+      return r;
+    }
+  };
 
   for (const name of argv) {
     const i = names.indexOf(name);
     if (i < 0) continue;
     const t = pls[i].tracks;
-    const ids = t.persistentID(), nm = t.name(), ar = t.artist(), du = t.duration();
-    out.tracks[name] = ids.map((p, j) => ({name: nm[j], artist: ar[j], duration: du[j], path: loc[p] || ''}));
+    const nm = t.name(), ar = t.artist(), du = t.duration(), loc = paths(t);
+    out.tracks[name] = nm.map((n, j) => ({name: n, artist: ar[j], duration: du[j], path: loc[j]}));
   }
   return JSON.stringify(out);
 }
@@ -176,7 +186,7 @@ def main() -> None:
         tracks = data.get(name, [])
         written = write_m3u8(out_dir / file_name(name), tracks)
         skipped = len(tracks) - written
-        note = f"  ({skipped} cloud-only skipped)" if skipped else ""
+        note = f"  ({skipped} without a local file skipped)" if skipped else ""
         print(f"✅ {file_name(name)}: {written} tracks{note}")
 
 
