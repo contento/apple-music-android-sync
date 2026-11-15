@@ -2,17 +2,17 @@
 """
 sync_apple_to_android_list.py
 
-Version : v3.0
+Version : v3.1
 Created : 2026-05-03
 
 Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
 
   --player
-    1. Read playlists in
-         → ./Apple/*.m3u8
+    1. Push the whole Music library (every audio file in source_root,
+       except DRM .m4p) → <android_root>/<Artist>/<Album>/<Track>
 
-    2. Push every referenced track from the iCloud Music folder
-         → <android_root>/<Artist>/<Album>/<Track>
+    2. Read playlists in
+         → ./Apple/*.m3u8
 
     3. Write an Android-ready playlist with absolute paths
          → ./Android/_playlists/<device>/<name>.m3u8   (local copy)
@@ -291,17 +291,27 @@ def push(src: Path, dst: str) -> bool:
     return res.returncode == 0
 
 
-def media_scan() -> None:
-    res = adb_shell(
-        "content call --uri content://media --method scan_volume --arg external_primary",
-        check=False,
-    )
-    if res.returncode != 0:
-        adb_shell(
-            "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE "
-            f"-d {shlex.quote('file://' + ANDROID_ROOT.rsplit('/', 1)[0])}",
+def volume_name(path: str) -> str:
+    """MediaStore volume holding `path`: external_primary or the SD card's name
+    (e.g. /storage/external_sd/... → external_sd, /storage/6135-3539/... → 6135-3539)."""
+    parts = path.split("/")
+    if path.startswith("/storage/emulated/") or len(parts) < 3:
+        return "external_primary"
+    return parts[2].lower()
+
+
+def media_scan(paths: list[str]) -> None:
+    for vol in dict.fromkeys(volume_name(p) for p in paths if p):
+        res = adb_shell(
+            f"content call --uri content://media --method scan_volume --arg {shlex.quote(vol)}",
             check=False,
         )
+        if res.returncode != 0:
+            adb_shell(
+                "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE "
+                f"-d {shlex.quote('file://' + ANDROID_ROOT.rsplit('/', 1)[0])}",
+                check=False,
+            )
 
 
 # ─── --player: parse playlists, plan track pushes, write Android playlist ──
@@ -404,12 +414,52 @@ def plan_playlist(
     return {"name": name, **counts}
 
 
+def plan_library(
+    device_files: dict[str, tuple[str, int]],
+    device_dirs: dict[str, str],
+    pushes: dict[str, tuple[str, Path]],
+    dry_run: bool,
+) -> dict:
+    """Queue every audio file in source_root that is missing or changed on the device."""
+    print(f"\n━━━ library {'(dry-run) ' if dry_run else ''}━━━")
+    print(f"  source: {SOURCE_ROOT}")
+    counts = {"queued": 0, "already": 0, "drm": 0, "evicted": 0, "missing": 0, "total": 0}
+    for root, dirs, files in os.walk(SOURCE_ROOT):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for f in sorted(files):
+            if f.startswith("."):
+                if f.endswith(".icloud"):
+                    counts["evicted"] += 1
+                continue
+            src = Path(root) / f
+            ext = src.suffix.lower()
+            if ext in DRM_EXTENSIONS:
+                counts["drm"] += 1
+                continue
+            if ext not in AUDIO_EXTENSIONS:
+                continue
+            counts["total"] += 1
+            rel = src.relative_to(SOURCE_ROOT).as_posix()
+            if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
+                counts["already"] += 1
+                continue
+            dst = f"{ANDROID_ROOT}/{device_spelling(rel, device_files, device_dirs)}"
+            pushes[key(dst)] = (dst, src)
+            counts["queued"] += 1
+    print(
+        f"  tracks={counts['total']}  to push={counts['queued']}  already={counts['already']}  "
+        f"drm={counts['drm']}  evicted={counts['evicted']}"
+    )
+    return {"name": "library", **counts}
+
+
 def plan_player(
     device_files: dict[str, tuple[str, int]],
     pushes: dict[str, tuple[str, Path]],
     device_name: str,
     dry_run: bool,
 ) -> list[dict]:
+    """Mirror the whole library, then write playlists that point into it."""
     if not SOURCE_ROOT.exists():
         sys.exit(f"Source music folder not found: {SOURCE_ROOT}")
     if not APPLE_DIR.exists():
@@ -423,7 +473,10 @@ def plan_player(
         sys.exit(f"No playlists found in: {APPLE_DIR}")
 
     device_dirs = device_dir_map(device_files)
-    return [
+    library = plan_library(device_files, device_dirs, pushes, dry_run)
+    # Tracks are already queued by plan_library; pushes is keyed by
+    # destination, so playlists only add their own .m3u8 files.
+    return [library] + [
         plan_playlist(p, device_files, device_dirs, pushes, device_name, dry_run)
         for p in playlist_files
     ]
@@ -623,7 +676,7 @@ def main() -> None:
     if args.mode in ("all", "player"):
         results += plan_player(device_files, pushes, selected_device, dry_run)
         if args.delete:
-            names = [r["name"] for r in results]
+            names = [r["name"] for r in results[1:]]  # skip the library row
             stale += plan_player_stale(device_files, names, selected_device, dry_run)
             stale_dirs.append(ANDROID_ROOT)
     if args.mode in ("all", "flac"):
@@ -656,7 +709,7 @@ def main() -> None:
             for root in stale_dirs:
                 adb_shell(f"find {shlex.quote(root)} -mindepth 1 -type d -empty -delete", check=False)
         if pushes or stale:
-            media_scan()
+            media_scan([ANDROID_ROOT, FLAC_ROOT, PLAYLIST_COPY_DIR])
 
     print("\n═══ overall ═══")
     width = max(len(r["name"]) for r in results)

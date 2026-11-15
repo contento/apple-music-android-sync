@@ -21,6 +21,11 @@ android_root = "/storage/emulated/0/Music/_player"
 # Also copy the playlists here, e.g. FiiO Music's import folder (optional).
 playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"
 
+# SD card on a FiiO M21 (mounted at /storage/external_sd).
+[devices.sd]
+android_root = "/storage/external_sd/Music/_player"
+playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"
+
 [devices.a105]
 android_root = "/storage/6135-3539/music/_player"
 # flac_root = "/storage/6135-3539/music/_flac"   # optional, overrides the default

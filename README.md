@@ -120,6 +120,10 @@ source_root = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/Music"
 android_root = "/storage/emulated/0/Music/_player"
 playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"   # optional, FiiO Music import
 
+[devices.sd]     # FiiO M21 SD card (MediaStore volume "external_sd")
+android_root = "/storage/external_sd/Music/_player"
+playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"
+
 [devices.a105]   # SD card
 android_root = "/storage/6135-3539/music/_player"
 
@@ -165,8 +169,8 @@ Use the wrapper for your platform — it always runs from the correct directory:
 
 **macOS / Linux**
 ```bash
-./sync.sh                  # --all: playlists + FLAC (default)
-./sync.sh --player         # playlists and their tracks only
+./sync.sh                  # --all: whole library + playlists + FLAC (default)
+./sync.sh --player         # whole library + playlists (no FLAC)
 ./sync.sh --flac           # FLAC folder only
 ./sync.sh --player --delete  # also remove device tracks no longer on the Mac
 ./sync.sh --flac --delete  # also remove device files no longer in _flac
@@ -200,9 +204,11 @@ The script will:
 
 1. Check that exactly one authorized device is attached (set `ANDROID_SERIAL` if several are).
 2. List the files already under `android_root` on the device, with sizes.
-3. `--player`: read every `.m3u8` in `Apple/`, queue each referenced track for
-   `<android_root>/<Artist>/<Album>/<Track>`, and write an Android-ready playlist to
+3. `--player`: queue every audio file in `source_root` (the whole library, except DRM
+   `.m4p`) for `<android_root>/<Artist>/<Album>/<Track>`; then read every `.m3u8` in
+   `Apple/` and write an Android-ready playlist pointing at those files to
    `Android/_playlists/<device>/` (pushed to `<android_root>/_playlists/<device>/`).
+   Playlists do not decide what is copied.
 4. `--flac`: queue every file in `flac.source` for `<flac_root>/…`, by default
    `<parent of android_root>/_flac` (e.g. `/storage/emulated/0/Music/_flac`)
    (`.DS_Store` and iCloud placeholders are skipped).
@@ -212,12 +218,13 @@ The script will:
    no tracks left, and this device's playlists no longer in `Apple/`. Hidden files and other
    devices' `_playlists/` folders are left alone. Run with `--dry-run` first to see the list.
 6. Check free space on the device, push only files that are missing or differ in size,
-   and ask Android's media scanner to index them. Re-runs are idempotent.
+   and ask Android's media scanner to index them (the volume of each target folder:
+   `external_primary` for internal storage, the SD card's volume name otherwise). Re-runs are idempotent.
 
 ### Output columns
 
 ```
-files=N    tracks in the playlist / files in the FLAC folder
+files=N    tracks in the library / the playlist / files in the FLAC folder
 to push=N  files missing on the device or different in size
 already=N  files already on the device (skipped)
 evicted=N  iCloud placeholder files not yet downloaded to this Mac

@@ -9,12 +9,14 @@ stay true and how to check it.
 Music.app (macOS) → exported `.m3u8` playlists in `Apple/` →
 `sync_apple_to_android_list.py` pushes the tracks to an Android player over
 `adb` and writes Android playlists. The main device is a **FiiO M21**
-(`internal` in the config), played with **FiiO Music**.
+(`sd` in the config: its SD card at `/storage/external_sd`, MediaStore
+volume `external_sd`), played with **FiiO Music**. `--player` copies the
+**whole library** (`source_root`); playlists only reference those files.
 
 | File | Role |
 |------|------|
 | `export_playlists.py` (`.sh`/`.ps1`) | Music.app / iTunes → `Apple/*.m3u8` |
-| `sync_apple_to_android_list.py` (`sync.sh`/`.ps1`) | Push tracks, FLAC folder and playlists to the device |
+| `sync_apple_to_android_list.py` (`sync.sh`/`.ps1`) | Push the whole library, FLAC folder and playlists to the device |
 | `find_tag_variants.py` (`tag_variants.sh`/`.ps1`) | Find/fix tags differing only by case/accents; undo files in `tag_undo/` |
 | `clean_music_library.py` | Read-only lister of dead/duplicate library entries |
 | `player_config.py` | Loads `sync_apple_to_android_config.toml` (shared by all scripts) |
@@ -34,8 +36,8 @@ These come from real failures ("no songs available" in FiiO Music):
    still *opens* the file — `adb shell test -f` passes while a player may
    show the track twice or not at all. Verify against the media library
    (see below), not the file system.
-2. **Folder case:** the real folder is `/storage/emulated/0/Music` (capital
-   M). `resolve_device_case()` fixes the configured roots at runtime; keep it.
+2. **Folder case:** the real folders are `/storage/emulated/0/Music` and
+   `/storage/external_sd/Music` (capital M). `resolve_device_case()` fixes the configured roots at runtime; keep it.
 3. **Accent encoding:** macOS hands out NFD (decomposed) names; files on the
    device are mostly NFC, a few NFD. Never write a path built from the Mac
    name — use `device_spelling()`, which takes the device's existing
@@ -61,7 +63,7 @@ Requires the FiiO plugged in (`adb devices` shows `model:FiiO_M21`).
 
 ```sh
 python3 -m py_compile *.py
-./sync.sh --player --dry-run        # expect sane counts, root shown as .../Music/_player
+./sync.sh --player --dry-run        # expect sane counts, root shown as /storage/external_sd/Music/_player
 ./sync.sh --player                  # real run (pushes only what changed)
 ```
 
