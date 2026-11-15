@@ -320,6 +320,21 @@ folders: **re-export the playlists** before the next sync.
 
 ---
 
+## Backing up playlists and config
+
+`Apple/`, `Android/` and `sync_apple_to_android_config.toml` are gitignored,
+so back them up with:
+
+```sh
+./backup.sh              # → iCloud Drive/WIP/apple-music-android-sync/YYYY-MM-DD/
+./backup.sh /some/dir    # → /some/dir/YYYY-MM-DD/
+```
+
+If today's folder already exists, it is deleted and replaced, so it always
+matches the current files exactly. Backups from other days are left alone.
+
+---
+
 ## Requirements
 
 - Python 3.9+

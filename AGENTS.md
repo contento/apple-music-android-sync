@@ -19,6 +19,7 @@ volume `external_sd`), played with **FiiO Music**. `--player` copies the
 | `sync_apple_to_android_list.py` (`sync.sh`/`.ps1`) | Push the whole library, FLAC folder and playlists to the device |
 | `find_tag_variants.py` (`tag_variants.sh`/`.ps1`) | Find/fix tags differing only by case/accents; undo files in `tag_undo/` |
 | `clean_music_library.py` | Read-only lister of dead/duplicate library entries |
+| `backup.sh` | Copy `Apple/`, `Android/` and the config `.toml` to an ISO-dated folder in iCloud Drive |
 | `player_config.py` | Loads `sync_apple_to_android_config.toml` (shared by all scripts) |
 
 `sync_apple_to_android_config.toml`, `Apple/` and `Android/` are gitignored
