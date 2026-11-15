@@ -176,6 +176,7 @@ Use the wrapper for your platform — it always runs from the correct directory:
 ./sync.sh --flac --delete  # also remove device files no longer in _flac
                            # (careful: includes .lrc/.jpg the player downloaded)
 ./sync.sh --dry-run        # preview only — works without the phone attached
+./sync.sh --dry-run --verbose  # list every file to push, not just the first 10
 ```
 
 **Windows (PowerShell)**
@@ -222,18 +223,36 @@ The script will:
    and ask Android's media scanner to index them (the volume of each target folder:
    `external_primary` for internal storage, the SD card's volume name otherwise). Re-runs are idempotent.
 
-### Output columns
+### Output
 
-```
-files=N    tracks in the library / the playlist / files in the FLAC folder
-to push=N  files missing on the device or different in size
-already=N  files already on the device (skipped)
-evicted=N  iCloud placeholder files not yet downloaded to this Mac
-missing=N  files referenced in the playlist but not found on disk
-drm=N      DRM-protected .m4p files (skipped — not playable on Android)
+```text
+🎧 Apple Music → Android sync  🔍 dry run
+  ┌───────────────────┬────────────────────────────────────────┐
+  │ 📱 Device         │ sd                                     │
+  │ 🎵 Music          │ /storage/external_sd/Music/_player     │
+  …
+📋 Playlists  Apple/*.m3u8 → /storage/emulated/0/FiiOMusic/playlist
+  ┌──────────────┬────────┬─────────────┬────────┬───────────┐
+  │ Playlist     │ Tracks │ In playlist │ 📤 New │ ❗ Issues │
+  │ ✅ Balada    │  1,036 │       1,036 │      · │         · │
+  …
+📊 Summary
+  │ 📚 Library │ 10,711 │       10,252 │        459 │          0 │      2 │
+  📦 To push: 459 files (1.7 GB)   🧹 To delete: 481   💾 Free on device: 174.0 GB
 ```
 
-Paths outside `source_root` are reported inline as `⊘ outside source root`.
+| Icon | Meaning |
+|------|---------|
+| ✅ On device | already on the device with the same size (skipped) |
+| 📤 To push / New | missing on the device or different in size |
+| 🧹 To delete | with `--delete`: on the device but no longer in the library / FLAC folder |
+| ❓ Missing | in the library or a playlist, but the file is not on the Mac |
+| ⏬ | iCloud placeholder, not downloaded to this Mac |
+| 🔒 DRM | protected `.m4p` files (skipped, not playable on Android) |
+| 🚫 | playlist entry outside `source_root` (e.g. a file in the Trash) |
+| ❗ | a playlist with entries that could not be written |
+
+Set `NO_COLOR=1` to turn off colours.
 
 ---
 
@@ -335,6 +354,23 @@ When Music.app saves a track it re-cases other fields to spellings it already
 knows, so run `--fix` again until it reports *Nothing to fix*. If "Keep Music
 Media folder organized" is on, renamed artists/albums move files to new
 folders: **re-export the playlists** before the next sync.
+
+### Albums split in two
+
+An album also splits when its tracks disagree on **year** or **disc number**
+(e.g. some tracks disc 0, others disc 1 of 1). `--albums` (macOS) gives each
+album one year (the most common, earliest on a tie) and consistent discs:
+
+```bash
+./tag_variants.sh --albums                                   # report
+./tag_variants.sh --albums --fix --artist "Camilo Sesto"     # fix one artist
+./tag_variants.sh album --fix --artist "Camilo Sesto"        # album-name spellings, one artist
+```
+
+`--artist NAME` limits any report or fix to tracks whose artist or album
+artist contains NAME. Writing to an iCloud-*matched* track makes Music.app
+pull its other tags back from iCloud, which can bring old album spellings and
+years back: run the fixes again until both report *Nothing to fix*.
 
 ---
 

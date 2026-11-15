@@ -1,11 +1,10 @@
 #!/usr/bin/env zsh
 # Usage:
-#   ./sync.sh                  # --all: playlists + FLAC (default)
-#   ./sync.sh --player         # playlists and their tracks only
+#   ./sync.sh                  # --all: whole Music library + playlists + FLAC (default)
+#   ./sync.sh --player         # Music library + playlists only
 #   ./sync.sh --flac           # FLAC folder only
-#   ./sync.sh --player --delete  # also remove device tracks gone from the Mac
-#   ./sync.sh --flac --delete  # also remove device files gone from _flac
-#   ./sync.sh --dry-run        # preview only
+#   ./sync.sh --delete         # also remove device files no longer in the library / FLAC folder
+#   ./sync.sh --dry-run        # preview only (add --verbose to list every file)
 set -euo pipefail
 cd "$(dirname "$0")"
 python3 -u sync_apple_to_android_list.py "$@"

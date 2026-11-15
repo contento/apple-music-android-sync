@@ -2,7 +2,7 @@
 """
 sync_apple_to_android_list.py
 
-Version : v3.2
+Version : v3.3
 Created : 2026-05-03
 
 Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
@@ -40,14 +40,20 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
 Files are compared by size against what is already on the device, so
 re-runs only push what changed.
 
+Output: a header table (device, folders, mode), one section each for the
+library, playlists (table), FLAC and deletions, then a summary table.
+Dry runs list the first 10 files per section (--verbose: all) and every
+file --delete would remove.
+
 Usage:
-    python3 sync_apple_to_android_list.py                   # --all, default device (internal)
+    python3 sync_apple_to_android_list.py                   # --all, default device
     python3 sync_apple_to_android_list.py --player          # playlists + their tracks
     python3 sync_apple_to_android_list.py --flac            # FLAC folder only
     python3 sync_apple_to_android_list.py --player --delete # also remove stale tracks
     python3 sync_apple_to_android_list.py --flac --delete   # also remove stale FLAC files
     python3 sync_apple_to_android_list.py --device a105     # use named device root
     python3 sync_apple_to_android_list.py --dry-run         # preview only
+    python3 sync_apple_to_android_list.py --dry-run --verbose  # list every file
 
 Requires: adb on PATH, USB debugging enabled, exactly one device attached
 (or ANDROID_SERIAL set to pick one).
@@ -67,6 +73,8 @@ from pathlib import Path
 
 import export_playlists
 import player_config
+import pretty as P
+from pretty import num, size as human
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -117,6 +125,8 @@ AUDIO_EXTENSIONS = {".m4a", ".mp3", ".flac", ".wav", ".aac", ".aif", ".aiff", ".
 FREE_SPACE_MARGIN = 500 * 1024 * 1024
 # Device files removed per adb call with --delete.
 DELETE_BATCH = 50
+# Files/issues listed per section without --verbose.
+LIST_LIMIT = 10
 # ───────────────────────────────────────────────────────────────────────────
 
 
@@ -169,13 +179,6 @@ def key(rel: str) -> str:
     return unicodedata.normalize("NFC", rel).casefold()
 
 
-def human(n: int) -> str:
-    size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GB"
 
 
 # ─── ADB ───────────────────────────────────────────────────────────────────
@@ -193,7 +196,7 @@ def device_attached(required: bool) -> bool:
     def fail(msg: str) -> bool:
         if required:
             sys.exit(msg)
-        print(f"  ⚠ {msg}\n  ⚠ dry-run continues as if the device were empty.")
+        print(f"  🔌 {P.yellow(msg)}\n  🔍 dry run continues as if the device were empty.")
         return False
 
     if not shutil.which("adb"):
@@ -290,7 +293,7 @@ def device_free_bytes(path: str) -> int:
 def push(src: Path, dst: str) -> bool:
     res = adb("push", str(src), dst, check=False)
     if res.returncode != 0:
-        print(f"    ✗ push failed: {res.stderr.strip() or res.stdout.strip()}")
+        print(f"     ❌ {P.red('push failed:')} {res.stderr.strip() or res.stdout.strip()}")
     return res.returncode == 0
 
 
@@ -345,26 +348,24 @@ def plan_playlist(
 ) -> dict:
     """Queue missing tracks in `pushes` and write the Android playlist locally."""
     name = apple_path.stem
-    print(f"\n━━━ {name} {'(dry-run) ' if dry_run else ''}━━━")
 
     playlist_rel = f"_playlists/{device_name}/{name}.m3u8"
     android_path = ANDROID_DIR / playlist_rel
 
     tracks = parse_m3u8(apple_path)
-    print(f"  {len(tracks)} tracks in Apple/{apple_path.name}")
 
     new_lines: list[str] = ["#EXTM3U", f"#PLAYLIST:{name}"]
-    counts: dict[str, int] = {
+    counts: dict = {
         "queued": 0, "already": 0, "drm": 0,
         "evicted": 0, "missing": 0, "outside": 0,
-        "total": len(tracks),
+        "total": len(tracks), "issues": [],
     }
 
     for src in tracks:
         try:
             rel = src.relative_to(SOURCE_ROOT).as_posix()
         except ValueError:
-            print(f"    ⊘ outside source root: {src}")
+            counts["issues"].append(f"🚫 outside source_root: {src}")
             counts["outside"] += 1
             continue
 
@@ -373,12 +374,12 @@ def plan_playlist(
             continue
 
         if is_icloud_placeholder(src):
-            print(f"    ⏬ not downloaded: {rel}")
+            counts["issues"].append(f"⏬ not downloaded: {rel}")
             counts["evicted"] += 1
             continue
 
         if not src.exists():
-            print(f"    ✗ missing: {rel}")
+            counts["issues"].append(f"❓ missing on the Mac: {rel}")
             counts["missing"] += 1
             continue
 
@@ -386,8 +387,6 @@ def plan_playlist(
         if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
             counts["already"] += 1
         else:
-            if dry_run:
-                print(f"    [dry-run] would push → {dev_rel}")
             dst = f"{ANDROID_ROOT}/{dev_rel}"
             pushes[key(dst)] = (dst, src)
             counts["queued"] += 1
@@ -396,25 +395,14 @@ def plan_playlist(
 
     # FiiO Music only imports "<name>.playlist.m3u8" and names the playlist <name>.
     copy_dst = f"{PLAYLIST_COPY_DIR}/{name}.playlist.m3u8" if PLAYLIST_COPY_DIR else ""
-    if dry_run:
-        print(f"  [dry-run] would write Android/{playlist_rel} and push it")
-        if copy_dst:
-            print(f"  [dry-run] would copy it to {copy_dst}")
-    else:
+    if not dry_run:
         android_path.parent.mkdir(parents=True, exist_ok=True)
         android_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         dst = f"{ANDROID_ROOT}/{playlist_rel}"
         pushes[key(dst)] = (dst, android_path)
         if copy_dst:
             pushes[key(copy_dst)] = (copy_dst, android_path)
-        print(f"  wrote Android/{playlist_rel}")
-
-    print(
-        f"  to push={counts['queued']}  already={counts['already']}  "
-        f"drm={counts['drm']}  evicted={counts['evicted']}  "
-        f"missing={counts['missing']}  outside={counts['outside']}"
-    )
-    return {"name": name, **counts}
+    return {"name": name, "kind": "playlist", **counts}
 
 
 def read_library() -> list[Path]:
@@ -446,9 +434,8 @@ def plan_library(
     dry_run: bool,
 ) -> dict:
     """Queue every library track that is missing or changed on the device."""
-    print(f"\n━━━ library {'(dry-run) ' if dry_run else ''}━━━")
-    print(f"  source: Music library, {len(library)} files under {SOURCE_ROOT}")
-    counts = {"queued": 0, "already": 0, "drm": 0, "evicted": 0, "missing": 0, "total": 0}
+    counts: dict = {"queued": 0, "already": 0, "drm": 0, "evicted": 0, "missing": 0, "total": 0,
+                    "issues": []}
     for src in library:
         ext = src.suffix.lower()
         if ext in DRM_EXTENSIONS:
@@ -462,7 +449,7 @@ def plan_library(
             counts["evicted"] += 1
             continue
         if not src.exists():
-            print(f"    ✗ missing: {rel}")
+            counts["issues"].append(f"❓ missing on the Mac: {rel}")
             counts["missing"] += 1
             continue
         if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
@@ -471,11 +458,7 @@ def plan_library(
         dst = f"{ANDROID_ROOT}/{device_spelling(rel, device_files, device_dirs)}"
         pushes[key(dst)] = (dst, src)
         counts["queued"] += 1
-    print(
-        f"  tracks={counts['total']}  to push={counts['queued']}  already={counts['already']}  "
-        f"drm={counts['drm']}  evicted={counts['evicted']}  missing={counts['missing']}"
-    )
-    return {"name": "library", **counts}
+    return {"name": "Library", "kind": "library", **counts}
 
 
 def plan_player(
@@ -548,12 +531,7 @@ def plan_player_stale(
     stale += [rel for k, rel in others.items()
               if os.path.splitext(k)[0] in stems_gone or os.path.dirname(k) not in dirs_kept]
 
-    stale = sorted(f"{ANDROID_ROOT}/{rel}" for rel in stale)
-    if dry_run:
-        for path in stale:
-            print(f"    [dry-run] would delete → {path}")
-    print(f"\n  _player: to delete={len(stale)}  ({len(gone)} tracks not in the Music library)")
-    return stale
+    return sorted(f"{ANDROID_ROOT}/{rel}" for rel in stale)
 
 
 # ─── --flac: mirror the FLAC folder ────────────────────────────────────────
@@ -567,19 +545,15 @@ def plan_flac(
     """Queue changed FLAC files in `pushes`; return counts and stale device paths."""
     if not FLAC_SOURCE.exists():
         sys.exit(f"FLAC folder not found: {FLAC_SOURCE}")
-    print(f"\n━━━ {FLAC_SUBDIR} {'(dry-run) ' if dry_run else ''}━━━")
-    print(f"  source: {FLAC_SOURCE}")
-    print(f"  target: {FLAC_ROOT}")
-
     device_files = list_device_files(FLAC_ROOT) if attached else {}
-    counts = {"queued": 0, "already": 0, "evicted": 0, "total": 0}
+    counts: dict = {"queued": 0, "already": 0, "evicted": 0, "total": 0, "issues": []}
     local: set[str] = set()
     for p in sorted(FLAC_SOURCE.rglob("*")):
         if not p.is_file():
             continue
         if p.name.startswith("."):
             if p.name.endswith(".icloud"):
-                print(f"    ⏬ not downloaded: {p.relative_to(FLAC_SOURCE)}")
+                counts["issues"].append(f"⏬ not downloaded: {p.relative_to(FLAC_SOURCE)}")
                 counts["evicted"] += 1
             continue
         rel = p.relative_to(FLAC_SOURCE).as_posix()
@@ -588,8 +562,6 @@ def plan_flac(
         if device_files.get(key(rel), ("", -1))[1] == p.stat().st_size:
             counts["already"] += 1
         else:
-            if dry_run:
-                print(f"    [dry-run] would push → {rel}")
             dst = f"{FLAC_ROOT}/{rel}"
             pushes[key(dst)] = (dst, p)
             counts["queued"] += 1
@@ -599,15 +571,7 @@ def plan_flac(
         if delete
         else []
     )
-    if dry_run:
-        for path in stale:
-            print(f"    [dry-run] would delete → {path}")
-
-    print(
-        f"  to push={counts['queued']}  already={counts['already']}  "
-        f"to delete={len(stale)}  evicted={counts['evicted']}"
-    )
-    return {"name": FLAC_SUBDIR, **counts, "stale": stale}
+    return {"name": "FLAC", "kind": "flac", **counts, "stale": stale}
 
 
 # ─── ENTRY POINT ───────────────────────────────────────────────────────────
@@ -653,6 +617,11 @@ def main() -> None:
         help="Remove device files that no longer exist locally (_player and/or FLAC).",
     )
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="List every file to push and every issue (default: the first few).",
+    )
+    parser.add_argument(
         "--device",
         default=DEFAULT_DEVICE,
         help=(
@@ -682,12 +651,18 @@ def main() -> None:
         FLAC_ROOT = resolve_device_case(FLAC_ROOT)
         if PLAYLIST_COPY_DIR:
             PLAYLIST_COPY_DIR = resolve_device_case(PLAYLIST_COPY_DIR)
-    print(
-        f"Using device '{selected_device}' with android_root={ANDROID_ROOT}  "
-        f"flac_root={FLAC_ROOT}  mode={args.mode}"
-    )
-    if PLAYLIST_COPY_DIR:
-        print(f"  playlists also copied to {PLAYLIST_COPY_DIR}")
+    limit = None if args.verbose else LIST_LIMIT
+    more = "  (--verbose lists all)"
+    print(f"\n🎧 {P.bold('Apple Music → Android sync')}" + (f"  🔍 {P.yellow('dry run')}" if dry_run else ""))
+    header = [["📱 Device", selected_device]]
+    if args.mode in ("all", "player"):
+        header.append(["🎵 Music", ANDROID_ROOT])
+    if args.mode in ("all", "flac"):
+        header.append(["💿 FLAC", FLAC_ROOT])
+    if PLAYLIST_COPY_DIR and args.mode in ("all", "player"):
+        header.append(["📋 FiiO playlists", PLAYLIST_COPY_DIR])
+    header.append(["🔧 Mode", args.mode + ("  + delete" if args.delete else "")])
+    P.table(None, header)
 
     device_files = list_device_files(ANDROID_ROOT) if attached and args.mode != "flac" else {}
 
@@ -708,47 +683,117 @@ def main() -> None:
         stale_dirs.append(FLAC_ROOT)
         results.append(flac)
 
+    def short(dst: str) -> str:
+        """Device path relative to the folder it is in (music, FLAC or playlists)."""
+        for root in (ANDROID_ROOT, FLAC_ROOT, PLAYLIST_COPY_DIR):
+            if root and dst.startswith(root + "/"):
+                return dst[len(root) + 1:]
+        return dst
+
+    lib = next((r for r in results if r["kind"] == "library"), None)
+    playlists = [r for r in results if r["kind"] == "playlist"]
+    flac_r = next((r for r in results if r["kind"] == "flac"), None)
+    track_pushes = [dst for dst, src in pushes.values() if src.suffix != ".m3u8"]
+
+    if lib:
+        P.title("📚", "Library", f"{num(lib['total'])} tracks in Music.app → {ANDROID_ROOT}")
+        P.items("", lib["issues"], limit, more)
+        if dry_run:
+            new = [d[len(ANDROID_ROOT) + 1:] for d in track_pushes if d.startswith(ANDROID_ROOT + "/")]
+            if new:
+                print(f"     📤 {num(len(new))} to push:")
+                P.items("  ", new, limit, more)
+    if playlists:
+        P.title("📋", "Playlists", f"Apple/*.m3u8 → {PLAYLIST_COPY_DIR or ANDROID_ROOT + '/_playlists'}")
+        for r in playlists:
+            if r["issues"]:
+                print(f"     {P.bold(r['name'])}")
+                P.items("", r["issues"], limit, more)
+        rows = []
+        for r in playlists:
+            issues = r["missing"] + r["evicted"] + r["outside"] + r["drm"]
+            ok = r["already"] + r["queued"]
+            rows.append([
+                ("✅ " if issues == 0 else "❗ ") + r["name"], num(r["total"]), num(ok),
+                num(r["queued"]) if r["queued"] else "·", num(issues) if issues else "·",
+            ])
+        P.table(["Playlist", "Tracks", "In playlist", "📤 New", "❗ Issues"], rows, "<>>>>")
+    if flac_r:
+        P.title("💿", "FLAC", f"{FLAC_SOURCE} → {FLAC_ROOT}")
+        P.items("", flac_r["issues"], limit, more)
+        if dry_run:
+            new = [d[len(FLAC_ROOT) + 1:] for d in track_pushes if d.startswith(FLAC_ROOT + "/")]
+            if new:
+                print(f"     📤 {num(len(new))} to push:")
+                P.items("  ", new, limit, more)
+    if args.delete:
+        P.title("🧹", "Delete from device", f"{num(len(stale))} files not in the library / FLAC folder")
+        # Always list deletions in full on a dry run: they are destructive.
+        if dry_run:
+            for root in dict.fromkeys(stale_dirs):
+                here = [short(p) for p in stale if p.startswith(root + "/")]
+                if here:
+                    print(f"     📁 {P.dim(root)}")
+                    P.items("  ", here)
+
     push_bytes = sum(src.stat().st_size for _, src in pushes.values())
-    print(f"\n  total to push: {len(pushes)} files ({human(push_bytes)})  to delete: {len(stale)}")
-    if attached:
-        free = device_free_bytes(ANDROID_ROOT)
-        if free >= 0:
-            print(f"  device free space: {human(free)}")
-            if push_bytes + FREE_SPACE_MARGIN > free:
-                sys.exit("Not enough free space on the device.")
+    free = device_free_bytes(ANDROID_ROOT) if attached else -1
+
+    P.title("📊", "Summary")
+    rows = []
+    if lib:
+        rows.append(["📚 Library", num(lib["total"]), num(lib["already"]), num(lib["queued"]),
+                     num(lib["missing"] + lib["evicted"]), num(lib["drm"])])
+    if flac_r:
+        rows.append(["💿 FLAC", num(flac_r["total"]), num(flac_r["already"]), num(flac_r["queued"]),
+                     num(flac_r["evicted"]), "·"])
+    if rows:
+        P.table(["", "Files", "✅ On device", "📤 To push", "❓ Missing", "🔒 DRM"], rows, "<>>>>>")
+    print(f"  📦 To push: {P.bold(num(len(pushes)))} files ({human(push_bytes)})"
+          + (f"   🧹 To delete: {P.bold(num(len(stale)))}" if args.delete else "")
+          + (f"   💾 Free on device: {human(free)}" if free >= 0 else ""))
+    if free >= 0 and push_bytes + FREE_SPACE_MARGIN > free:
+        sys.exit(f"  ❌ {P.red('Not enough free space on the device.')}")
+
+    if dry_run:
+        print(f"\n🔍 {P.yellow('Dry run: nothing was changed.')}")
+        return
 
     failed = 0
-    if not dry_run:
-        for i, (dst, src) in enumerate(pushes.values(), 1):
-            print(f"  [{i}/{len(pushes)}] {dst}  ({human(src.stat().st_size)})")
-            if not push(src, dst):
-                failed += 1
-        for i in range(0, len(stale), DELETE_BATCH):
-            batch = stale[i:i + DELETE_BATCH]
-            for path in batch:
-                print(f"  ✗ delete {path}")
-            adb_shell("rm -f " + " ".join(shlex.quote(p) for p in batch), check=False)
-        if stale:
-            for root in stale_dirs:
-                adb_shell(f"find {shlex.quote(root)} -mindepth 1 -type d -empty -delete", check=False)
-        if pushes or stale:
-            media_scan([ANDROID_ROOT, FLAC_ROOT, PLAYLIST_COPY_DIR])
+    if pushes:
+        P.title("📤", "Pushing", f"{num(len(pushes))} files, {human(push_bytes)}")
+    done_bytes = 0
+    for i, (dst, src) in enumerate(pushes.values(), 1):
+        n = src.stat().st_size
+        done_bytes += n
+        shown = short(dst)
+        pct = 100 * done_bytes // max(push_bytes, 1)
+        print(f"  {P.dim(f'[{i:>{len(str(len(pushes)))}}/{len(pushes)}] {pct:>3}%')}  {shown}  {P.dim(human(n))}")
+        if not push(src, dst):
+            failed += 1
+    if stale:
+        P.title("🧹", "Deleting", f"{num(len(stale))} files")
+    for i in range(0, len(stale), DELETE_BATCH):
+        batch = stale[i:i + DELETE_BATCH]
+        for path in batch:
+            print(f"  {P.dim('-')} {short(path)}")
+        adb_shell("rm -f " + " ".join(shlex.quote(p) for p in batch), check=False)
+    if stale:
+        for root in stale_dirs:
+            adb_shell(f"find {shlex.quote(root)} -mindepth 1 -type d -empty -delete", check=False)
+    if pushes or stale:
+        media_scan([ANDROID_ROOT, FLAC_ROOT, PLAYLIST_COPY_DIR])
 
-    print("\n═══ overall ═══")
-    width = max(len(r["name"]) for r in results)
-    for r in results:
-        line = (
-            f"  {r['name']:<{width}}  "
-            f"files={r['total']:>4}  "
-            f"to push={r['queued']:>4}  already={r['already']:>4}  "
-            f"evicted={r['evicted']:>3}"
-        )
-        if "missing" in r:
-            line += f"  missing={r['missing']:>3}  drm={r['drm']:>3}"
-        print(line)
+    print()
     if failed:
-        print(f"  ✗ {failed} push(es) failed")
+        print(f"❌ {P.red(f'{failed} push(es) failed')}  ·  📤 {num(len(pushes) - failed)} pushed")
         sys.exit(1)
+    if pushes or stale:
+        print(f"✅ {P.green('Done')}  ·  📤 {num(len(pushes))} pushed ({human(push_bytes)})"
+              + (f"  ·  🧹 {num(len(stale))} deleted" if stale else "")
+              + "  ·  🔄 media scan started")
+    else:
+        print(f"✅ {P.green('Everything is up to date.')}")
 
 
 if __name__ == "__main__":

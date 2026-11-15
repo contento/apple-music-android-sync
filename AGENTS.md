@@ -23,6 +23,7 @@ Playlists only reference those files.
 | `clean_music_library.py` | Read-only lister of dead library entries (`--dead-entries`) and songs held twice (`--copies`) |
 | `backup.sh` | Copy `Apple/`, `Android/` and the config `.toml` to an ISO-dated folder in iCloud Drive |
 | `player_config.py` | Loads `sync_apple_to_android_config.toml` (shared by all scripts) |
+| `pretty.py` | Output helpers: boxed tables, section titles, sizes. Use only two-column-wide emoji (no U+FE0F) so tables align |
 
 `sync_apple_to_android_config.toml`, `Apple/` and `Android/` are gitignored
 (personal paths). When you add a config key, add it to

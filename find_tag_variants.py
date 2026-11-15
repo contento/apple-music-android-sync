@@ -2,7 +2,7 @@
 """
 find_tag_variants.py
 
-Version : v1.1
+Version : v1.2
 Created : 2026-11-05
 
 Find Music.app tag values that differ only by case, accents or spacing,
@@ -28,12 +28,24 @@ most common first.
     saves a track, so run --fix again until it reports nothing to fix
 The old values are saved to tag_undo/<timestamp>.json first; --undo restores them.
 
+--albums (macOS) checks that the tracks of each album (album artist +
+album name) agree on year and disc number, which players also use to
+group: one year per album (most common, earliest on a tie); single-disc
+albums get disc 1 of 1, multi-disc albums the highest disc number as disc
+count. Add --fix to apply it (same undo file).
+
+--artist NAME limits a report or fix to tracks whose artist or album
+artist contains NAME.
+
 Usage:
     python3 find_tag_variants.py                 # report all fields
     python3 find_tag_variants.py artist album    # only these fields
     python3 find_tag_variants.py --fix           # show the plan, ask, then apply
     python3 find_tag_variants.py --fix --yes     # apply without asking
     python3 find_tag_variants.py --undo tag_undo/20261105-143000.json
+    python3 find_tag_variants.py --albums                    # report album year/disc mismatches
+    python3 find_tag_variants.py --albums --fix --artist "Camilo Sesto"
+    python3 find_tag_variants.py album --fix --artist "Camilo Sesto"
 
 Fields: artist, albumArtist, composer, genre, album, name
 """
@@ -58,7 +70,8 @@ UNDO_DIR = SCRIPT_DIR / "tag_undo"
 JXA = """
 const t = Application('Music').libraryPlaylists[0].tracks;
 JSON.stringify({pid: t.persistentID(), artist: t.artist(), albumArtist: t.albumArtist(),
-                album: t.album(), name: t.name(), composer: t.composer(), genre: t.genre()});
+                album: t.album(), name: t.name(), composer: t.composer(), genre: t.genre(),
+                year: t.year(), discNumber: t.discNumber(), discCount: t.discCount()});
 """
 
 # JXA: apply [index, persistentID, field, value] changes. Index lookup is
@@ -195,6 +208,63 @@ def choose(variants: collections.Counter, preferred: dict[str, str]) -> str:
     return " ".join(words)
 
 
+def selected(tags: dict[str, list], artist: str | None) -> set[int]:
+    """Track indexes whose artist or album artist contains `artist` (all if None)."""
+    n = len(tags["name"])
+    if not artist:
+        return set(range(n))
+    want = fold(artist)
+    return {i for i in range(n) if want in fold(tags["artist"][i]) or want in fold(tags["albumArtist"][i])}
+
+
+def plan_album_fixes(tags: dict[str, list], only: set[int]) -> list[dict]:
+    """Make year and disc numbers agree within each album.
+
+    Players split an album whose tracks disagree on these: one year per
+    album (the most common, earliest on a tie); single-disc albums get disc
+    1 of 1, multi-disc albums get the highest disc number as disc count
+    unless the tracks already use a larger one (one disc of a box set).
+    """
+    albums: dict[tuple, list[int]] = collections.defaultdict(list)
+    for i in only:
+        if tags["album"][i]:
+            albums[(fold(tags["albumArtist"][i] or tags["artist"][i]), fold(tags["album"][i]))].append(i)
+    changes: list[dict] = []
+    print("── Albums (year, disc)")
+    for _, ix in sorted(albums.items()):
+        years = collections.Counter(tags["year"][i] for i in ix if tags["year"][i])
+        year = max(years, key=lambda y: (years[y], -y)) if years else 0
+        top_disc = max(tags["discNumber"][i] for i in ix)
+        # Keep a disc count the tracks already use if it covers every disc
+        # (e.g. "disc 2 of 3" for one disc of a box set).
+        counts = collections.Counter(tags["discCount"][i] for i in ix if tags["discCount"][i] >= top_disc)
+        disc_count = counts.most_common(1)[0][0] if top_disc > 1 and counts else max(top_disc, 1)
+        notes = []
+        before = len(changes)
+        for i in ix:
+            want = {"discCount": disc_count}
+            if year:
+                want["year"] = year
+            if top_disc <= 1:
+                want["discNumber"] = 1
+            for field, value in want.items():
+                if tags[field][i] != value:
+                    changes.append({"index": i, "pid": tags["pid"][i], "field": field,
+                                    "old": tags[field][i], "new": value})
+        if len(changes) > before:
+            fields = collections.Counter(c["field"] for c in changes[before:])
+            if len(years) > 1:
+                notes.append(f"years {dict(years)} → {year}")
+            elif fields["year"]:
+                notes.append(f"missing year → {year}")
+            if fields["discNumber"] or fields["discCount"]:
+                notes.append(f"disc → {'1 of 1' if top_disc <= 1 else f'of {disc_count}'}")
+            i = ix[0]
+            print(f"   {tags['albumArtist'][i] or tags['artist'][i]} / {tags['album'][i]}: {'; '.join(notes)}")
+    print()
+    return changes
+
+
 def read_tags() -> dict[str, list[str]]:
     if sys.platform == "win32":
         app, cmd = "iTunes", ["powershell", "-NoProfile", "-NonInteractive", "-Command", ITUNES_PS]
@@ -237,8 +307,11 @@ def report(tags: dict[str, list[str]], field: str) -> None:
     print()
 
 
-def plan_fixes(tags: dict[str, list[str]], fields: list[str]) -> list[dict]:
+def plan_fixes(tags: dict[str, list[str]], fields: list[str], only: set[int]) -> list[dict]:
     preferred = load_overrides()
+    if len(only) < len(tags["name"]):
+        tags = {k: [v[i] if i in only else "" for i in range(len(v))] if k in FIELDS else v
+                for k, v in tags.items()}
     changes: list[dict] = []
     for field in fields:
         print(f"── {FIELDS[field][0]}")
@@ -286,10 +359,11 @@ def write_tags(changes: list[dict], value_key: str) -> int:
     return failed
 
 
-def fix(fields: list[str], yes: bool) -> None:
+def fix(fields: list[str], yes: bool, albums: bool, artist: str | None) -> None:
     tags = read_tags()
-    print(f"{len(tags['name'])} tracks\n")
-    changes = plan_fixes(tags, fields)
+    only = selected(tags, artist)
+    print(f"{len(tags['name'])} tracks" + (f", {len(only)} by {artist!r}" if artist else "") + "\n")
+    changes = plan_album_fixes(tags, only) if albums else plan_fixes(tags, fields, only)
     if not changes:
         print("Nothing to fix.")
         return
@@ -324,19 +398,26 @@ def main() -> None:
     parser.add_argument("--fix", action="store_true", help="Rewrite variants to one spelling (macOS).")
     parser.add_argument("--yes", action="store_true", help="With --fix, apply without asking.")
     parser.add_argument("--undo", type=Path, metavar="FILE", help="Restore the values saved in an undo file.")
+    parser.add_argument("--albums", action="store_true",
+                        help="Check that tracks of each album agree on year and disc number (macOS).")
+    parser.add_argument("--artist", metavar="NAME",
+                        help="Only tracks whose artist or album artist contains NAME.")
     args = parser.parse_args()
 
     fields = args.fields or list(FIELDS)
     unknown = [f for f in fields if f not in FIELDS]
     if unknown:
         sys.exit(f"Unknown field(s): {', '.join(unknown)}. Available: {', '.join(FIELDS)}")
-    if (args.fix or args.undo) and sys.platform != "darwin":
-        sys.exit("--fix and --undo only work with Music.app on macOS.")
+    if (args.fix or args.undo or args.albums) and sys.platform != "darwin":
+        sys.exit("--fix, --undo and --albums only work with Music.app on macOS.")
 
     if args.undo:
         undo(args.undo)
     elif args.fix:
-        fix(fields, args.yes)
+        fix(fields, args.yes, args.albums, args.artist)
+    elif args.albums:
+        tags = read_tags()
+        plan_album_fixes(tags, selected(tags, args.artist))
     else:
         tags = read_tags()
         print(f"{len(tags['name'])} tracks\n")
