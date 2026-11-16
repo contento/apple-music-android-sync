@@ -13,3 +13,4 @@ Android/
 __pycache__/
 tag_undo/
 LIBRARY_ANALYSIS.md
+lyrics_cache.json

@@ -355,6 +355,18 @@ knows, so run `--fix` again until it reports *Nothing to fix*. If "Keep Music
 Media folder organized" is on, renamed artists/albums move files to new
 folders: **re-export the playlists** before the next sync.
 
+### Timed lyrics
+
+`fetch_lyrics.py` downloads synced lyrics from [LRCLIB](https://lrclib.net)
+(free, no key) and saves `<song>.lrc` next to each audio file. It sends
+artist, title, album and length to lrclib.net. Misses are remembered in
+`lyrics_cache.json`.
+
+```bash
+python3 fetch_lyrics.py --sample 200   # try 200 random tracks, report the match rate
+python3 fetch_lyrics.py --run          # whole library (resumable)
+```
+
 ### Audio files outside the library
 
 Files in the Music folder that no library entry points to never reach the
