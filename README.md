@@ -360,7 +360,7 @@ folders: **re-export the playlists** before the next sync.
 `fetch_lyrics.py` downloads synced lyrics from [LRCLIB](https://lrclib.net)
 (free, no key) and saves `<song>.lrc` next to each audio file. It sends
 artist, title, album and length to lrclib.net. Misses are remembered in
-`lyrics_cache.json`.
+`lyrics_cache.json`. `./sync.sh --player` pushes each `.lrc` beside its song.
 
 ```bash
 python3 fetch_lyrics.py --sample 200   # try 200 random tracks, report the match rate

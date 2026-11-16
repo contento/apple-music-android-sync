@@ -2,7 +2,7 @@
 """
 sync_apple_to_android_list.py
 
-Version : v3.3
+Version : v3.4
 Created : 2026-05-03
 
 Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
@@ -12,6 +12,8 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
        lists under source_root, except DRM .m4p. Files in the folder that
        the library does not list are skipped.
          → <android_root>/<Artist>/<Album>/<Track>
+       A timed-lyrics file beside a track (<Track>.lrc, from fetch_lyrics.py)
+       is pushed with it.
 
     2. Read playlists in
          → ./Apple/*.m3u8
@@ -426,6 +428,26 @@ def read_library() -> list[Path]:
     return sorted(set(inside))
 
 
+def queue_lyrics(
+    src: Path,
+    rel: str,
+    device_files: dict[str, tuple[str, int]],
+    device_dirs: dict[str, str],
+    pushes: dict[str, tuple[str, Path]],
+    counts: dict,
+) -> None:
+    """Queue the timed lyrics (<song>.lrc, see fetch_lyrics.py) beside a track, if new or changed."""
+    lrc = src.with_suffix(".lrc")
+    if not lrc.is_file():
+        return
+    lrc_rel = os.path.splitext(rel)[0] + ".lrc"
+    if device_files.get(key(lrc_rel), ("", -1))[1] == lrc.stat().st_size:
+        return
+    dst = f"{ANDROID_ROOT}/{device_spelling(lrc_rel, device_files, device_dirs)}"
+    pushes[key(dst)] = (dst, lrc)
+    counts["lyrics"] = counts.get("lyrics", 0) + 1
+
+
 def plan_library(
     library: list[Path],
     device_files: dict[str, tuple[str, int]],
@@ -452,6 +474,7 @@ def plan_library(
             counts["issues"].append(f"❓ missing on the Mac: {rel}")
             counts["missing"] += 1
             continue
+        queue_lyrics(src, rel, device_files, device_dirs, pushes, counts)
         if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
             counts["already"] += 1
             continue
@@ -749,6 +772,8 @@ def main() -> None:
                      num(flac_r["evicted"]), "·"])
     if rows:
         P.table(["", "Files", "✅ On device", "📤 To push", "❓ Missing", "🔒 DRM"], rows, "<>>>>>")
+    if lib and lib.get("lyrics"):
+        print(f"  🎤 Timed lyrics (.lrc) to push: {num(lib['lyrics'])}")
     print(f"  📦 To push: {P.bold(num(len(pushes)))} files ({human(push_bytes)})"
           + (f"   🧹 To delete: {P.bold(num(len(stale)))}" if args.delete else "")
           + (f"   💾 Free on device: {human(free)}" if free >= 0 else ""))
