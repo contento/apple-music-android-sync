@@ -367,6 +367,28 @@ python3 fetch_lyrics.py --sample 200   # try 200 random tracks, report the match
 python3 fetch_lyrics.py --run          # whole library (resumable)
 ```
 
+### Missing artwork
+
+`fetch_artwork.py` looks up albums whose tracks have no artwork on
+MusicBrainz and downloads the front cover from the Cover Art Archive. It
+only accepts a clear match (same title and artist, score 90+). Without
+flags it downloads to `art_cache/` and reports; `--apply` embeds the covers
+in the artwork-less tracks. Albums with no album tag are skipped.
+
+```bash
+python3 fetch_artwork.py            # dry run
+python3 fetch_artwork.py --apply
+```
+
+### Low-bitrate tracks
+
+```bash
+python3 clean_music_library.py --low-bitrate
+```
+
+Lists lossy tracks under 128 kbps, most worth replacing first (in a
+playlist, then most plays, then lowest bitrate). Read-only.
+
 ### Audio files outside the library
 
 Files in the Music folder that no library entry points to never reach the

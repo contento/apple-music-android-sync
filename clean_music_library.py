@@ -2,7 +2,7 @@
 """
 clean_music_library.py
 
-Version : v1.2
+Version : v1.3
 Created : 2026-11-05
 
 List Music.app library entries that need cleaning up (macOS). Read-only,
@@ -34,6 +34,11 @@ except --copies --fix.
     tracks). Re-import them with File ▸ Add to Library, or delete them.
     Files are not changed.
 
+  --low-bitrate
+    List lossy tracks under 128 kbps (upgrade candidates), most worth
+    replacing first: in a playlist, then most plays, then lowest bitrate.
+    Read-only.
+
 Remove dead entries by hand in Music.app: select, ⌘⌫, and choose "Keep File".
 This script deliberately does not delete: removing a track through
 scripting can move its file to the Trash even when another entry still
@@ -44,6 +49,7 @@ Usage:
     python3 clean_music_library.py --copies
     python3 clean_music_library.py --copies --fix
     python3 clean_music_library.py --orphans
+    python3 clean_music_library.py --low-bitrate
 """
 
 from __future__ import annotations
@@ -271,6 +277,33 @@ def remove_copies(d: dict[str, list], remove: list[int], users: dict[str, list[s
     print(f"  moved {len(files)} files to the Trash")
 
 
+def list_low_bitrate(limit_kbps: int = 128) -> None:
+    """Lossy tracks below `limit_kbps`, ranked by how much an upgrade would be heard."""
+    d = read_tracks(JXA_COPIES)
+    users = playlist_users()
+    low = [i for i in range(len(d["pid"]))
+           if 0 < (d["bitrate"][i] or 0) < limit_kbps and not is_lossless(d, i)]
+
+    def path(i: int) -> str:
+        p = d["loc"][i]
+        return urllib.parse.unquote(urllib.parse.urlparse(p).path) if p.startswith("file:") else p
+
+    def lists(i: int) -> list[str]:
+        return users.get(nfc(path(i)), [])
+
+    low.sort(key=lambda i: (not lists(i), -(d["plays"][i] or 0), d["bitrate"][i],
+                            d["artist"][i].casefold(), d["name"][i].casefold()))
+    print(f"{len(d['pid'])} file tracks\n")
+    print(f"   {'kbps':>4}  {'plays':>5}  track  [playlists]")
+    for i in low:
+        pl = lists(i)
+        print(f"   {d['bitrate'][i]:>4}  {d['plays'][i] or 0:>5}  {d['artist'][i]} – {d['name'][i]}"
+              f"  ({d['album'][i]})" + (f"  [{', '.join(sorted(set(pl)))}]" if pl else ""))
+    in_pl = sum(1 for i in low if lists(i))
+    print(f"\n{len(low)} lossy tracks under {limit_kbps} kbps; {in_pl} are in a playlist, "
+          f"{sum(1 for i in low if d['plays'][i])} have been played.")
+
+
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4p", ".aac", ".flac", ".wav", ".aif", ".aiff", ".ogg", ".opus", ".wma"}
 
 
@@ -300,11 +333,18 @@ def main() -> None:
                         help="List songs held more than once as separate files, with the one to keep.")
     parser.add_argument("--orphans", action="store_true",
                         help="List audio files in the Music folder that are not in the library.")
+    parser.add_argument("--low-bitrate", action="store_true",
+                        help="List lossy tracks under 128 kbps, most worth replacing first.")
     parser.add_argument("--fix", action="store_true",
                         help="With --copies: remove the copies not marked ★ (entry + file to the Trash).")
     args = parser.parse_args()
-    if not args.dead_entries and not args.copies and not args.orphans:
-        parser.error("choose what to list: --dead-entries, --copies or --orphans")
+    if not args.dead_entries and not args.copies and not args.orphans and not args.low_bitrate:
+        parser.error("choose what to list: --dead-entries, --copies, --orphans or --low-bitrate")
+    if args.low_bitrate:
+        list_low_bitrate()
+        if not args.dead_entries and not args.copies and not args.orphans:
+            return
+        print()
     if args.orphans:
         list_orphans()
         if not args.dead_entries and not args.copies:
