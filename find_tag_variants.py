@@ -2,7 +2,7 @@
 """
 find_tag_variants.py
 
-Version : v1.2
+Version : v1.4
 Created : 2026-11-05
 
 Find Music.app tag values that differ only by case, accents or spacing,
@@ -34,6 +34,14 @@ group: one year per album (most common, earliest on a tie); single-disc
 albums get disc 1 of 1, multi-disc albums the highest disc number as disc
 count. Add --fix to apply it (same undo file).
 
+--fill (macOS) fills blank tags from what the library already knows, never
+overwriting: year from the album's other tracks, album artist from the
+artist (non-compilations), genre from the artist's dominant genre, and the
+compilation flag on "Varios Artistas" tracks. Add --fix to apply it.
+
+--rename-genre OLD NEW (macOS) changes one genre to another on every track,
+e.g. --rename-genre Rancheras Ranchera --fix. Same undo file.
+
 --artist NAME limits a report or fix to tracks whose artist or album
 artist contains NAME.
 
@@ -45,6 +53,8 @@ Usage:
     python3 find_tag_variants.py --undo tag_undo/20261105-143000.json
     python3 find_tag_variants.py --albums                    # report album year/disc mismatches
     python3 find_tag_variants.py --albums --fix --artist "Camilo Sesto"
+    python3 find_tag_variants.py --fill                      # report blank tags that can be filled
+    python3 find_tag_variants.py --fill --fix
     python3 find_tag_variants.py album --fix --artist "Camilo Sesto"
 
 Fields: artist, albumArtist, composer, genre, album, name
@@ -55,6 +65,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import re
 import subprocess
 import sys
 import time
@@ -71,7 +82,8 @@ JXA = """
 const t = Application('Music').libraryPlaylists[0].tracks;
 JSON.stringify({pid: t.persistentID(), artist: t.artist(), albumArtist: t.albumArtist(),
                 album: t.album(), name: t.name(), composer: t.composer(), genre: t.genre(),
-                year: t.year(), discNumber: t.discNumber(), discCount: t.discCount()});
+                year: t.year(), discNumber: t.discNumber(), discCount: t.discCount(),
+                compilation: t.compilation()});
 """
 
 # JXA: apply [index, persistentID, field, value] changes. Index lookup is
@@ -265,6 +277,77 @@ def plan_album_fixes(tags: dict[str, list], only: set[int]) -> list[dict]:
     return changes
 
 
+def plan_blank_fills(tags: dict[str, list], only: set[int]) -> list[dict]:
+    """Fill empty tags from what the library already knows (never overwrites).
+
+    - year: the album's most common year (earliest on a tie), if any track has one
+    - album artist: the artist, when the album is not a compilation and no
+      other track of the album already names an album artist
+    - genre: the artist's most common genre, if it covers at least 90% of
+      their tagged tracks (otherwise listed for a manual decision)
+    - compilation flag: set on "Varios Artistas" / "Various Artists" tracks
+    """
+    varios = re.compile(r"^(_a_\s*)?(varios|various)", re.I)
+    albums: dict[tuple, list[int]] = collections.defaultdict(list)
+    by_artist: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
+    for i in range(len(tags["name"])):
+        if tags["album"][i]:
+            albums[(fold(tags["albumArtist"][i] or tags["artist"][i]), fold(tags["album"][i]))].append(i)
+        if tags["genre"][i]:
+            by_artist[fold(tags["artist"][i])][tags["genre"][i]] += 1
+    by_album: dict[str, list[int]] = collections.defaultdict(list)
+    for i in range(len(tags["name"])):
+        if tags["album"][i]:
+            by_album[fold(tags["album"][i])].append(i)
+
+    changes: list[dict] = []
+    manual: list[str] = []
+
+    def add(i: int, field: str, new) -> None:
+        changes.append({"index": i, "pid": tags["pid"][i], "field": field, "old": tags[field][i], "new": new})
+
+    print("── Blank tags")
+    for ix in albums.values():
+        years = collections.Counter(tags["year"][i] for i in ix if tags["year"][i])
+        if years:
+            year = max(years, key=lambda y: (years[y], -y))
+            for i in ix:
+                if i in only and not tags["year"][i]:
+                    add(i, "year", year)
+    for i in sorted(only):
+        artist = tags["artist"][i]
+        if tags["album"][i] and not tags["albumArtist"][i] and artist and not tags["compilation"][i] \
+                and not varios.match(artist):
+            siblings = {tags["albumArtist"][j] for j in by_album[fold(tags["album"][i])] if tags["albumArtist"][j]}
+            if not siblings:
+                add(i, "albumArtist", artist)
+        if artist and varios.match(artist) and not tags["compilation"][i]:
+            add(i, "compilation", True)
+        if not tags["genre"][i] and artist:
+            counts = by_artist.get(fold(artist))
+            if counts and counts.most_common(1)[0][1] >= 0.9 * sum(counts.values()):
+                add(i, "genre", counts.most_common(1)[0][0])
+            else:
+                manual.append(f"{artist} / {tags['album'][i]} / {tags['name'][i]}: genre {dict(counts) or 'unknown'}")
+    summary = collections.Counter(c["field"] for c in changes)
+    for field in ("year", "albumArtist", "genre", "compilation"):
+        print(f"   {field}: {summary[field]} tracks")
+    if manual:
+        print(f"   left for you ({len(manual)} genre blanks with no clear answer):")
+        for line in manual[:20]:
+            print(f"      {line}")
+    print()
+    return changes
+
+
+def plan_genre_rename(tags: dict[str, list], old: str, new: str) -> list[dict]:
+    """Change genre `old` to `new` on every track that has it (exact match, ignoring case)."""
+    changes = [{"index": i, "pid": tags["pid"][i], "field": "genre", "old": tags["genre"][i], "new": new}
+               for i in range(len(tags["name"])) if fold(tags["genre"][i]) == fold(old)]
+    print(f"── Genre {old!r} → {new!r}: {len(changes)} tracks\n")
+    return changes
+
+
 def read_tags() -> dict[str, list[str]]:
     if sys.platform == "win32":
         app, cmd = "iTunes", ["powershell", "-NoProfile", "-NonInteractive", "-Command", ITUNES_PS]
@@ -359,11 +442,14 @@ def write_tags(changes: list[dict], value_key: str) -> int:
     return failed
 
 
-def fix(fields: list[str], yes: bool, albums: bool, artist: str | None) -> None:
+def fix(fields: list[str], yes: bool, albums: bool, artist: str | None, fill: bool = False,
+        rename: list[str] | None = None) -> None:
     tags = read_tags()
     only = selected(tags, artist)
     print(f"{len(tags['name'])} tracks" + (f", {len(only)} by {artist!r}" if artist else "") + "\n")
-    changes = plan_album_fixes(tags, only) if albums else plan_fixes(tags, fields, only)
+    changes = (plan_genre_rename(tags, *rename) if rename else
+               plan_blank_fills(tags, only) if fill else
+               plan_album_fixes(tags, only) if albums else plan_fixes(tags, fields, only))
     if not changes:
         print("Nothing to fix.")
         return
@@ -400,6 +486,10 @@ def main() -> None:
     parser.add_argument("--undo", type=Path, metavar="FILE", help="Restore the values saved in an undo file.")
     parser.add_argument("--albums", action="store_true",
                         help="Check that tracks of each album agree on year and disc number (macOS).")
+    parser.add_argument("--fill", action="store_true",
+                        help="Fill blank year, album artist, genre and compilation flag from the library (macOS).")
+    parser.add_argument("--rename-genre", nargs=2, metavar=("OLD", "NEW"),
+                        help="Change genre OLD to NEW on every track (macOS); add --fix to apply.")
     parser.add_argument("--artist", metavar="NAME",
                         help="Only tracks whose artist or album artist contains NAME.")
     args = parser.parse_args()
@@ -408,13 +498,18 @@ def main() -> None:
     unknown = [f for f in fields if f not in FIELDS]
     if unknown:
         sys.exit(f"Unknown field(s): {', '.join(unknown)}. Available: {', '.join(FIELDS)}")
-    if (args.fix or args.undo or args.albums) and sys.platform != "darwin":
+    if (args.fix or args.undo or args.albums or args.fill or args.rename_genre) and sys.platform != "darwin":
         sys.exit("--fix, --undo and --albums only work with Music.app on macOS.")
 
     if args.undo:
         undo(args.undo)
     elif args.fix:
-        fix(fields, args.yes, args.albums, args.artist)
+        fix(fields, args.yes, args.albums, args.artist, args.fill, args.rename_genre)
+    elif args.rename_genre:
+        plan_genre_rename(read_tags(), *args.rename_genre)
+    elif args.fill:
+        tags = read_tags()
+        plan_blank_fills(tags, selected(tags, args.artist))
     elif args.albums:
         tags = read_tags()
         plan_album_fixes(tags, selected(tags, args.artist))

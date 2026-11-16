@@ -2,7 +2,7 @@
 """
 clean_music_library.py
 
-Version : v1.1
+Version : v1.2
 Created : 2026-11-05
 
 List Music.app library entries that need cleaning up (macOS). Read-only,
@@ -28,6 +28,12 @@ except --copies --fix.
     are songs that have both a lossless (FLAC, ALAC, WAV, AIFF) and a
     compressed version.
 
+  --orphans
+    List audio files in the Music folder (source_root) that no library entry
+    points to. They never reach the player (the sync copies only library
+    tracks). Re-import them with File ▸ Add to Library, or delete them.
+    Files are not changed.
+
 Remove dead entries by hand in Music.app: select, ⌘⌫, and choose "Keep File".
 This script deliberately does not delete: removing a track through
 scripting can move its file to the Trash even when another entry still
@@ -37,6 +43,7 @@ Usage:
     python3 clean_music_library.py --dead-entries
     python3 clean_music_library.py --copies
     python3 clean_music_library.py --copies --fix
+    python3 clean_music_library.py --orphans
 """
 
 from __future__ import annotations
@@ -264,6 +271,25 @@ def remove_copies(d: dict[str, list], remove: list[int], users: dict[str, list[s
     print(f"  moved {len(files)} files to the Trash")
 
 
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".m4p", ".aac", ".flac", ".wav", ".aif", ".aiff", ".ogg", ".opus", ".wma"}
+
+
+def list_orphans() -> None:
+    """Audio files under source_root that no library entry points to."""
+    root = Path(player_config.load_config()["paths"]["source_root"]).expanduser()
+    d = read_tracks(JXA_COPIES)
+    known = {nfc(urllib.parse.unquote(urllib.parse.urlparse(p).path) if p.startswith("file:") else p)
+             for p in d["loc"] if p}
+    orphans = sorted(
+        os.path.join(r, f) for r, _, files in os.walk(root) for f in files
+        if not f.startswith(".") and os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS
+        and nfc(os.path.join(r, f)) not in known)
+    print(f"{len(d['loc'])} library entries\n")
+    for p in orphans:
+        print(f"   {os.path.relpath(p, root)}   ({os.path.getsize(p) / 1e6:.1f} MB)")
+    print(f"\n{len(orphans)} audio files not in the library. Add them with File ▸ Add to Library, or delete them.")
+
+
 def main() -> None:
     if sys.platform != "darwin":
         sys.exit("This script only works with Music.app on macOS.")
@@ -272,11 +298,18 @@ def main() -> None:
                         help="List iCloud 'duplicate' entries that share a file with another entry.")
     parser.add_argument("--copies", action="store_true",
                         help="List songs held more than once as separate files, with the one to keep.")
+    parser.add_argument("--orphans", action="store_true",
+                        help="List audio files in the Music folder that are not in the library.")
     parser.add_argument("--fix", action="store_true",
                         help="With --copies: remove the copies not marked ★ (entry + file to the Trash).")
     args = parser.parse_args()
-    if not args.dead_entries and not args.copies:
-        parser.error("choose what to list: --dead-entries or --copies")
+    if not args.dead_entries and not args.copies and not args.orphans:
+        parser.error("choose what to list: --dead-entries, --copies or --orphans")
+    if args.orphans:
+        list_orphans()
+        if not args.dead_entries and not args.copies:
+            return
+        print()
     if args.fix and not args.copies:
         parser.error("--fix works with --copies only")
     if args.copies:

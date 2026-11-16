@@ -355,6 +355,17 @@ knows, so run `--fix` again until it reports *Nothing to fix*. If "Keep Music
 Media folder organized" is on, renamed artists/albums move files to new
 folders: **re-export the playlists** before the next sync.
 
+### Audio files outside the library
+
+Files in the Music folder that no library entry points to never reach the
+player. List them (nothing is changed):
+
+```bash
+python3 clean_music_library.py --orphans
+```
+
+Re-import with **File ▸ Add to Library**, or delete them.
+
 ### Albums split in two
 
 An album also splits when its tracks disagree on **year** or **disc number**
@@ -365,6 +376,24 @@ album one year (the most common, earliest on a tie) and consistent discs:
 ./tag_variants.sh --albums                                   # report
 ./tag_variants.sh --albums --fix --artist "Camilo Sesto"     # fix one artist
 ./tag_variants.sh album --fix --artist "Camilo Sesto"        # album-name spellings, one artist
+```
+
+### Blank tags
+
+`--fill` (macOS) fills empty tags from what the library already knows and
+never overwrites: year from the album's other tracks, album artist from the
+artist (non-compilations), genre from the artist's dominant genre (90%+), and
+the compilation flag on "Varios Artistas" tracks.
+
+```bash
+./tag_variants.sh --fill          # report
+./tag_variants.sh --fill --fix    # apply (undo file in tag_undo/)
+```
+
+To merge one genre into another on every track:
+
+```bash
+./tag_variants.sh --rename-genre Rancheras Ranchera --fix
 ```
 
 `--artist NAME` limits any report or fix to tracks whose artist or album
