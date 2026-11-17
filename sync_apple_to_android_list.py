@@ -35,7 +35,8 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
             e.g. /storage/emulated/0/music/_flac)
     --delete (with --player, --flac or --all) also removes device files
     that are no longer in the library / FLAC folder: renamed/removed tracks with their .lrc/.jpg,
-    and this device's playlists no longer in Apple/.
+    and this device's playlists no longer in Apple/. Tracks an exported
+    playlist references are always kept.
 
   --all (default): both of the above.
 
@@ -528,8 +529,18 @@ def plan_player_stale(
     - other files in folders that have no tracks left (e.g. cover.jpg);
     - this device's playlists that are no longer in Apple/.
     Other devices' playlist folders are left alone.
+
+    Tracks a playlist references count as library tracks: Music.app can list
+    a playlist entry that its library listing misses, and plan_playlist()
+    pushes those, so deleting them would empty the playlist line.
     """
     local = {key(p.relative_to(SOURCE_ROOT).as_posix()) for p in library}
+    for name in playlists:
+        for src in parse_m3u8(APPLE_DIR / f"{name}.m3u8"):
+            try:
+                local.add(key(src.relative_to(SOURCE_ROOT).as_posix()))
+            except ValueError:
+                pass  # outside source_root: never pushed
 
     playlist_dir = key(f"_playlists/{device_name}/")
     keep_playlists = {key(f"_playlists/{device_name}/{n}.m3u8") for n in playlists}
