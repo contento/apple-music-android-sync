@@ -40,8 +40,9 @@ Full pipeline: Mac → Android over USB (adb) for Poweramp / Sony Music Player
 
   --all (default): both of the above.
 
-Files are compared by size against what is already on the device, so
-re-runs only push what changed.
+Files are compared by size and modification time against what is already
+on the device (adb push keeps the Mac's mtime), so re-runs only push what
+changed, including tag edits that keep the file size.
 
 Output: a header table (device, folders, mode), one section each for the
 library, playlists (table), FLAC and deletions, then a summary table.
@@ -87,6 +88,7 @@ APPLE_DIR = SCRIPT_DIR / "Apple"
 ANDROID_DIR = SCRIPT_DIR / "Android"
 SOURCE_ROOT = SCRIPT_DIR
 ANDROID_ROOT = "/storage/emulated/0/music/_player"
+MTIME_SLACK = 2  # seconds; FAT-formatted SD cards store mtimes in 2 s steps
 FLAC_ROOT = "/storage/emulated/0/music/_flac"
 DEVICE_ROOTS: dict[str, str] = {}
 DEVICE_FLAC_ROOTS: dict[str, str] = {}
@@ -238,10 +240,10 @@ def resolve_device_case(path: str) -> str:
     return cur or "/"
 
 
-def device_dir_map(device_files: dict[str, tuple[str, int]]) -> dict[str, str]:
+def device_dir_map(device_files: dict[str, tuple[str, int, int]]) -> dict[str, str]:
     """Return {key(dir): dir} for every folder that holds a device file."""
     dirs: dict[str, str] = {}
-    for rel, _ in device_files.values():
+    for rel, *_ in device_files.values():
         parts = rel.split("/")[:-1]
         for i in range(1, len(parts) + 1):
             d = "/".join(parts[:i])
@@ -251,7 +253,7 @@ def device_dir_map(device_files: dict[str, tuple[str, int]]) -> dict[str, str]:
 
 def device_spelling(
     rel: str,
-    device_files: dict[str, tuple[str, int]],
+    device_files: dict[str, tuple[str, int, int]],
     device_dirs: dict[str, str],
 ) -> str:
     """Spell `rel` as the device does; new parts are written in NFC."""
@@ -266,19 +268,34 @@ def device_spelling(
     return "/".join(parts)
 
 
-def list_device_files(root: str) -> dict[str, tuple[str, int]]:
-    """Return {key: (rel, size)} for every file under root on the device."""
+def list_device_files(root: str) -> dict[str, tuple[str, int, int]]:
+    """Return {key: (rel, size, mtime)} for every file under root on the device."""
     q = shlex.quote(root)
-    res = adb_shell(f"[ -d {q} ] && find {q} -type f -exec stat -c '%s|%n' {{}} +", check=False)
-    files: dict[str, tuple[str, int]] = {}
+    res = adb_shell(f"[ -d {q} ] && find {q} -type f -exec stat -c '%s|%Y|%n' {{}} +", check=False)
+    files: dict[str, tuple[str, int, int]] = {}
     prefix = root.rstrip("/") + "/"
     for line in res.stdout.splitlines():
-        size, _, path = line.partition("|")
-        if not path.startswith(prefix) or not size.isdigit():
+        size, _, rest = line.partition("|")
+        mtime, _, path = rest.partition("|")
+        if not path.startswith(prefix) or not size.isdigit() or not mtime.isdigit():
             continue
         rel = path[len(prefix):]
-        files[key(rel)] = (rel, int(size))
+        files[key(rel)] = (rel, int(size), int(mtime))
     return files
+
+
+def on_device(device_files: dict[str, tuple[str, int, int]], rel: str, src: Path) -> bool:
+    """True if the device copy of `rel` matches `src`: same size and not older.
+
+    adb push keeps the Mac file's mtime, so a newer Mac file means it changed
+    since the last push, even at the same size (e.g. a tag edit that fits in
+    the tag's padding). MTIME_SLACK covers SD cards that round timestamps.
+    """
+    hit = device_files.get(key(rel))
+    if not hit:
+        return False
+    st = src.stat()
+    return hit[1] == st.st_size and st.st_mtime <= hit[2] + MTIME_SLACK
 
 
 def device_free_bytes(path: str) -> int:
@@ -343,7 +360,7 @@ def is_icloud_placeholder(p: Path) -> bool:
 
 def plan_playlist(
     apple_path: Path,
-    device_files: dict[str, tuple[str, int]],
+    device_files: dict[str, tuple[str, int, int]],
     device_dirs: dict[str, str],
     pushes: dict[str, tuple[str, Path]],
     device_name: str,
@@ -387,7 +404,7 @@ def plan_playlist(
             continue
 
         dev_rel = device_spelling(rel, device_files, device_dirs)
-        if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
+        if on_device(device_files, rel, src):
             counts["already"] += 1
         else:
             dst = f"{ANDROID_ROOT}/{dev_rel}"
@@ -432,7 +449,7 @@ def read_library() -> list[Path]:
 def queue_lyrics(
     src: Path,
     rel: str,
-    device_files: dict[str, tuple[str, int]],
+    device_files: dict[str, tuple[str, int, int]],
     device_dirs: dict[str, str],
     pushes: dict[str, tuple[str, Path]],
     counts: dict,
@@ -442,7 +459,7 @@ def queue_lyrics(
     if not lrc.is_file():
         return
     lrc_rel = os.path.splitext(rel)[0] + ".lrc"
-    if device_files.get(key(lrc_rel), ("", -1))[1] == lrc.stat().st_size:
+    if on_device(device_files, lrc_rel, lrc):
         return
     dst = f"{ANDROID_ROOT}/{device_spelling(lrc_rel, device_files, device_dirs)}"
     pushes[key(dst)] = (dst, lrc)
@@ -451,7 +468,7 @@ def queue_lyrics(
 
 def plan_library(
     library: list[Path],
-    device_files: dict[str, tuple[str, int]],
+    device_files: dict[str, tuple[str, int, int]],
     device_dirs: dict[str, str],
     pushes: dict[str, tuple[str, Path]],
     dry_run: bool,
@@ -476,7 +493,7 @@ def plan_library(
             counts["missing"] += 1
             continue
         queue_lyrics(src, rel, device_files, device_dirs, pushes, counts)
-        if device_files.get(key(rel), ("", -1))[1] == src.stat().st_size:
+        if on_device(device_files, rel, src):
             counts["already"] += 1
             continue
         dst = f"{ANDROID_ROOT}/{device_spelling(rel, device_files, device_dirs)}"
@@ -487,7 +504,7 @@ def plan_library(
 
 def plan_player(
     library: list[Path],
-    device_files: dict[str, tuple[str, int]],
+    device_files: dict[str, tuple[str, int, int]],
     pushes: dict[str, tuple[str, Path]],
     device_name: str,
     dry_run: bool,
@@ -517,7 +534,7 @@ def plan_player(
 
 def plan_player_stale(
     library: list[Path],
-    device_files: dict[str, tuple[str, int]],
+    device_files: dict[str, tuple[str, int, int]],
     playlists: list[str],
     device_name: str,
     dry_run: bool,
@@ -547,7 +564,7 @@ def plan_player_stale(
     stale: list[str] = []
     tracks: dict[str, str] = {}  # key → rel, audio files only
     others: dict[str, str] = {}
-    for k, (rel, _) in device_files.items():
+    for k, (rel, *_) in device_files.items():
         if k.startswith(key("_playlists/")):
             if k.startswith(playlist_dir) and k not in keep_playlists:
                 stale.append(rel)
@@ -593,7 +610,7 @@ def plan_flac(
         rel = p.relative_to(FLAC_SOURCE).as_posix()
         local.add(key(rel))
         counts["total"] += 1
-        if device_files.get(key(rel), ("", -1))[1] == p.stat().st_size:
+        if on_device(device_files, rel, p):
             counts["already"] += 1
         else:
             dst = f"{FLAC_ROOT}/{rel}"
@@ -601,7 +618,7 @@ def plan_flac(
             counts["queued"] += 1
 
     stale = (
-        sorted(f"{FLAC_ROOT}/{rel}" for k, (rel, _) in device_files.items() if k not in local)
+        sorted(f"{FLAC_ROOT}/{rel}" for k, (rel, *_) in device_files.items() if k not in local)
         if delete
         else []
     )

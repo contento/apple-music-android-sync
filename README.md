@@ -243,7 +243,7 @@ The script will:
 
 | Icon | Meaning |
 |------|---------|
-| ✅ On device | already on the device with the same size (skipped) |
+| ✅ On device | already on the device with the same size and not older than the Mac file (skipped) |
 | 📤 To push / New | missing on the device or different in size |
 | 🧹 To delete | with `--delete`: on the device but no longer in the library / FLAC folder (tracks a playlist references are kept) |
 | ❓ Missing | in the library or a playlist, but the file is not on the Mac |
