@@ -30,6 +30,11 @@ playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"
 android_root = "/storage/6135-3539/music/_player"
 # flac_root = "/storage/6135-3539/music/_flac"   # optional, overrides the default
 
+# iPod Video (5th gen) in disk mode, for ipod_load.py.
+[ipod]
+mount = "/Volumes/iPod"
+name = "iPod"
+
 [flac]
 source = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_flac"
 target_subdir = "_flac"

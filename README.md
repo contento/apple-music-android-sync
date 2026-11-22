@@ -30,6 +30,9 @@ _player/
 ├── tag_variants.ps1                        ← PowerShell wrapper for find_tag_variants.py (Windows / iTunes)
 ├── find_tag_variants.py                    ← report Music.app tags that differ only by case/accents
 ├── clean_music_library.py                  ← list duplicate library entries (macOS, read-only)
+├── ipod.sh                                 ← shell wrapper for ipod_load.py (macOS)
+├── ipod.ps1                                ← PowerShell wrapper for ipod_load.py (Windows)
+├── ipod_load.py                            ← copy music + Apple/ playlists onto an iPod Video
 ├── player_config.py                        ← shared config loader
 ├── sync_apple_to_android_config.toml       ← your local config (git-ignored)
 └── sync_apple_to_android_config.template.toml  ← safe template to commit
@@ -127,6 +130,10 @@ playlist_copy_dir = "/storage/emulated/0/FiiOMusic/playlist"
 [devices.a105]   # SD card
 android_root = "/storage/6135-3539/music/_player"
 
+[ipod]           # iPod Video in disk mode (ipod_load.py)
+mount = "/Volumes/iPod"
+name = "iPod"
+
 [flac]
 source = "~/Library/Mobile Documents/com~apple~CloudDocs/Media/_flac"
 target_subdir = "_flac"
@@ -144,6 +151,8 @@ target_subdir = "_flac"
 | `flac.source` | Local FLAC library (Artist/Album/Track) |
 | `flac.target_subdir` | FLAC folder name, created next to `android_root` (default `_flac` → `/storage/emulated/0/Music/_flac`) |
 | `devices.<name>.flac_root` | Optional absolute FLAC folder on that device, overriding the default |
+| `ipod.mount` | Where the iPod Video mounts in disk mode (default `/Volumes/iPod`) |
+| `ipod.name` | iPod name shown in its menus (default `iPod`) |
 | `devices.<name>.playlist_copy_dir` | Optional folder that also gets a copy of each playlist, e.g. FiiO Music's import folder `/storage/emulated/0/FiiOMusic/playlist` |
 
 > All paths support `~` for the home directory.
@@ -434,6 +443,39 @@ To merge one genre into another on every track:
 artist contains NAME. Writing to an iCloud-*matched* track makes Music.app
 pull its other tags back from iCloud, which can bring old album spellings and
 years back: run the fixes again until both report *Nothing to fix*.
+
+---
+
+## iPod Video (5th gen)
+
+`ipod_load.py` loads an iPod Video with Apple's firmware without iTunes or
+Finder: it copies the music folder (`source_root`) over USB disk mode and
+writes the iPod's `iTunesDB` itself, with every `Apple/*.m3u8` playlist.
+
+```sh
+./ipod.sh --dry-run    # songs to copy and playlist matches; changes nothing
+./ipod.sh --limit 10   # test with 10 new songs
+./ipod.sh              # copy what is new, rewrite the database
+```
+
+```powershell
+.\ipod.ps1 --dry-run   # Windows: the iPod is found on its drive letter (e.g. E:\)
+```
+
+- Only `.mp3` and `.m4a` (AAC / ALAC) are copied; FLAC, WAV and DRM `.m4p` are skipped.
+  Files whose audio is not really MP3/AAC/ALAC (e.g. MP2 or WAV named `.mp3`) are listed at the end.
+- Resumable: `iPod_Control/iTunes/loader-manifest.json` on the iPod records what
+  was copied, so a re-run copies only new songs. The database is rebuilt every run,
+  so after re-exporting playlists just run it again.
+- Playlist entries that are not on the iPod (unsupported format, outside
+  `source_root`) are counted in the table and left out.
+- Do **not** sync the iPod with Finder/Music.app afterwards: it would replace the database.
+- If `[ipod] mount` has no iPod, the only iPod mounted (`/Volumes/*` or a drive letter) is used;
+  pass `--ipod` when several are plugged in.
+- Windows can only read a FAT32 ("Windows format") iPod, not a Mac-formatted one. The manifest
+  records each song's computer path, so an iPod loaded from the Mac stops with an error on a PC
+  whose music folder is elsewhere (delete `iPod_Control/iTunes/loader-manifest.json` to start over).
+- Eject the iPod before unplugging. Needs `ffprobe` (`brew install ffmpeg`, Windows: `winget install Gyan.FFmpeg`).
 
 ---
 
