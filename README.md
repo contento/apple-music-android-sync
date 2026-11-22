@@ -475,6 +475,22 @@ writes the iPod's `iTunesDB` itself, with every `Apple/*.m3u8` playlist.
 - Windows can only read a FAT32 ("Windows format") iPod, not a Mac-formatted one. The manifest
   records each song's computer path, so an iPod loaded from the Mac stops with an error on a PC
   whose music folder is elsewhere (delete `iPod_Control/iTunes/loader-manifest.json` to start over).
+- Disk-level jobs (Rockbox) go through `ipod_disk.sh`, which you run yourself (it uses `sudo`):
+
+  ```sh
+  ./ipod_disk.sh build                 # compile vendor/ipodpatcher
+  ./ipod_disk.sh info                  # sector size and partitions (read-only)
+  ./ipod_disk.sh backup                # partition map + firmware → ~/ipod-backups/
+  ./ipod_disk.sh convert               # ERASES the iPod: Mac → FAT32 (512-byte sectors only)
+  ./ipod_disk.sh bootloader-add bootloader-ipodvideo.ipod
+  ./ipod_disk.sh bootloader-remove
+  ```
+
+  On Windows, `.\ipod_disk.ps1` has the same commands (elevated PowerShell; `build` needs
+  MinGW-w64 gcc, e.g. `winget install BrechtSanders.WinLibs.POSIX.UCRT`).
+
+  iPods that report 2048-byte sectors (like 5.5G models) cannot be converted by
+  ipodpatcher; restore them in iTunes on Windows to get FAT32.
 - Eject the iPod before unplugging. Needs `ffprobe` (`brew install ffmpeg`, Windows: `winget install Gyan.FFmpeg`).
 
 ---

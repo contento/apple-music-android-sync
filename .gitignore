@@ -16,3 +16,8 @@ LIBRARY_ANALYSIS.md
 lyrics_cache.json
 art_cache/
 PLAYLIST_SUGGESTIONS.md
+
+# Built ipodpatcher binary
+vendor/ipodpatcher/ipodpatcher
+vendor/ipodpatcher/ipodpatcher.exe
+vendor/ipodpatcher/version-win.h

@@ -24,6 +24,8 @@ Playlists only reference those files.
 | `fetch_lyrics.py` | Downloads timed lyrics from LRCLIB and saves `<song>.lrc` next to each audio file (never touches tags or audio) |
 | `fetch_artwork.py` | Finds covers on MusicBrainz / Cover Art Archive for albums without art; dry run by default, `--apply` embeds them in Music.app |
 | `ipod_load.py` (`ipod.sh`/`.ps1`) | Copy the music folder to an iPod Video (disk mode) and write its `iTunesDB` with `Apple/*.m3u8` playlists; resumable via a manifest on the iPod |
+| `ipod_disk.sh` (`.ps1`) | User-run wrapper for `vendor/ipodpatcher` and `dd`: `build`, `info`, `backup` (→ `~/ipod-backups/`), `convert`, `bootloader-add`/`-remove`. Finds the iPod by media name; `convert` refuses non-512-byte sectors and runs only after a backup |
+| `vendor/ipodpatcher/` | Rockbox's ipodpatcher (GPL v2+, unmodified C source, `make` to build): convert a Mac iPod to FAT32, add/remove the Rockbox bootloader |
 | `backup.sh` | Copy `Apple/`, `Android/` and the config `.toml` to an ISO-dated folder in iCloud Drive |
 | `player_config.py` | Loads `sync_apple_to_android_config.toml` (shared by all scripts) |
 | `pretty.py` | Output helpers: boxed tables, section titles, sizes. Use only two-column-wide emoji (no U+FE0F) so tables align |
@@ -63,6 +65,10 @@ These come from real failures ("no songs available" in FiiO Music):
    `_playlists/` folders.
 7. **`find_tag_variants.py --fix` edits the Music library.** Only run it when
    asked; it writes an undo file to `tag_undo/` first.
+8. **`ipodpatcher` writes to the iPod's raw disk** (`--convert`/`--format`
+   erase it, `-a`/`-d` change its boot partition). It needs `sudo`; the user
+   runs it, never an agent. Only `-l` is read-only. Keep `vendor/ipodpatcher/`
+   unmodified so it can be compared with upstream.
 
 ## How to verify a change
 
